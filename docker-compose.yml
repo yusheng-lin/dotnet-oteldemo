@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    ports:
+      - "16686:16686"   # Jaeger UI → http://localhost:16686
+      - "4317:4317"     # OTLP gRPC（重要！）
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    volumes:
+      - jaeger-data:/data
+
+  gateway:
+    build: ./gateway
+    ports:
+      - "5000:8080"
+    depends_on:
+      - jaeger
+      - orderservice
+    environment:
+      ORDERSERVICE_ENDPOINT : "http://orderservice:8080/order"
+      JAEGER_ENDPOINT : "http://jaeger:4317"
+
+  orderservice:
+    build: ./orderservice
+    depends_on:
+      - jaeger
+      - paymentservice
+      - mysql
+    environment:
+      MYSQL_CONNECTION : "server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb"
+      JAEGER_ENDPOINT : "http://jaeger:4317"
+      PAYMENTSERVICE_ENDPOINT : "http://paymentservice:8080/pay"
+
+  mysql:
+    image: mysql:8.0.28
+    environment:
+      - MYSQL_ROOT_PASSWORD=otelpass
+      - MYSQL_DATABASE=ordersdb
+      - MYSQL_USER=otel
+      - MYSQL_PASSWORD=otelpass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+
+  paymentservice:
+    build: ./paymentservice
+    depends_on:
+      - jaeger
+    environment:
+      JAEGER_ENDPOINT : "http://jaeger:4317"
+
+volumes:
+  mysql-data:
+  jaeger-data:
