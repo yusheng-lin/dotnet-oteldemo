@@ -9,6 +9,8 @@ This repository contains three services wired with OpenTelemetry and Jaeger coll
 - `paymentservice` (ports: none exposed; called by orderservice)
 - `jaeger` (UI: http://localhost:16686, OTLP gRPC: 4317, OTLP HTTP: 4318)
 - `mysql` (added for demo persistence, default port 3306)
+- `kafka` (Message broker used for centralized logging)
+- `zookeeper` (Required by Kafka for cluster coordination, controller election, and configuration storage)
 
 What this README covers
 - How to build and run the demo (docker-compose)
@@ -32,21 +34,86 @@ docker compose up -d --build
 
 ```bash
 # Create an order via the gateway
-curl -sS http://localhost:5000/create-order
+curl -s http://localhost:5000/create-order
 
 # Or call the orderservice directly (inside compose network):
-curl -sS http://localhost:5000/create-order
+curl -s http://localhost:5000/create-order
 ```
 
 3. Open Jaeger UI
 
 Visit http://localhost:16686. Use the Service dropdown to select `gateway`, `orderservice`, or `paymentservice`.
 
+Logging flow (NLog → Kafka → Logstash → Elasticsearch)
+
+```
+┌─────────────┐   ┌──────────────┐   ┌──────────────┐
+│   Gateway   │   │ OrderService │   │PaymentService│
+└──────┬──────┘   └──────┬───────┘   └──────-┬──────┘
+       │                 │                   │
+       │  NLog (2 targets: file + Kafka)     │
+       ├─────────────────┼───────────────────┤
+       │                 │                   │
+       ▼                 ▼                   ▼
+  /var/log/app/*.log (daily rotation, 1 day kept)
+       │                 │                   │
+       └─────────────────┴───────────────────┘
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │    Kafka    │
+                  │ topic:      │
+                  │  app-logs   │
+                  └──────┬──────┘
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │  Logstash   │
+                  │  (consume   │
+                  │   Kafka)    │
+                  └──────┬──────┘
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │Elasticsearch│
+                  │   index:    │
+                  │app-logs-*   │
+                  └──────┬──────┘
+                         │
+                         ▼
+                  ┌─────────────┐
+                  │   Kibana    │
+                  │ (Visualize) │
+                  └─────────────┘
+```
+
+- Each service uses NLog with two targets: a daily-rotated file under `/var/log/app/*.log` (1 day kept) and Kafka topic `app-logs` on `kafka:9092`.
+- Logstash consumes `app-logs` from Kafka (see `logstash/pipeline/logstash.conf`) and ships to Elasticsearch at `http://elasticsearch:9200`, indexing into `app-logs-YYYY.MM.dd`.
+- Kibana connects to Elasticsearch to provide a UI for searching and visualizing logs.
+- Tail a service log file: `docker compose exec orderservice sh -c "tail -n 50 /var/log/app/orderservice.log"`.
+- Validate Kafka → Logstash → ES: `docker compose logs logstash --tail=200`, `curl http://localhost:9200/_cat/indices?v&pretty` and `curl http://localhost:9200/app-logs-*/_count?pretty`.
+- Check kafka message `docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic app-logs --from-beginning`
+
+How to use Kibana
+
+1. **Access Kibana**: Open [http://localhost:5601](http://localhost:5601) in your browser.
+2. **Create Data View** (First time only):
+   - Go to **Stack Management** (gear icon) > **Data Views**.
+   - Click **Create data view**.
+   - **Name**: `App Logs`
+   - **Index pattern**: `app-logs-*` (matches the indices created by Logstash).
+   - **Timestamp field**: `@timestamp`.
+   - Click **Save data view to Kibana**.
+3. **View Logs**:
+   - Go to **Discover** (compass icon).
+   - Select your `App Logs` data view.
+   - You can now search, filter, and view your application logs.
+
 DB tracing and where to find SQL spans
 
 - The `orderservice` uses a manual ActivitySource named `orderservice-db` to create DB spans around SQL operations. The activity name used by the code is `mysql.query`.
 - The TracerProvider is configured to include that ActivitySource (so manual DB activities become spans) — look for `.AddSource("orderservice-db")` in `orderservice/Program.cs`.
-- DB activities include standard tags such as `db.system` (`mysql`), `db.name`, `net.peer.name`, `db.user`, and `db.statement`. The code sets `db.statement` before executing the SQL, so you should see the `CREATE TABLE` and `INSERT` SQL strings on the DB spans in Jaeger (note: Jaeger UI may truncate long statements).
+- DB activities include standard tags such as `db.system` (`mysql`), `db.name`, `net.peer.name`, `db.user`, and `db.statement`. The code sets `db.statement` before executing the SQL, so you should see the `INSERT` SQL strings on the DB spans in Jaeger (note: Jaeger UI may truncate long statements).
 
 MySQL details
 
@@ -61,65 +128,6 @@ MySQL details
 server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb
 ```
 
-Notes on case-sensitivity and table names
-
-- MySQL table names are case-sensitive on some platforms/hosts (depending on `lower_case_table_names` and filesystem). The demo creates and inserts into a table named ``Orders`` (backticks used) to avoid accidental case issues. If you manually created the table, ensure the exact name and casing matches.
-
-How DB tracing is emitted (brief)
-
-- The code in `orderservice/Program.cs`:
-  - Creates an ActivitySource `orderservice-db`.
-  - Starts an Activity named `mysql.query` with kind `Client` before running SQL.
-  - Adds standard tags (db.system, db.name, db.user, db.statement, etc.) to the activity.
-  - Saves/executes SQL using `MySqlConnector` + `Dapper`.
-  - The TracerProvider registers `.AddSource("orderservice-db")`, so these activities are collected and exported to Jaeger via OTLP.
-
-If you don't see DB spans in Jaeger
-
-1. Confirm services are up and healthy:
-
-```bash
-docker compose ps
-docker compose logs jaeger --tail=200
-docker compose logs orderservice --tail=200
-```
-
-2. Generate requests (repeat a few times). Then in Jaeger UI:
-  - Set the Time Range to the last minute(s).
-  - Select `orderservice` in the Service field and click `Find Traces`.
-  - Look at individual traces — DB spans will appear as child spans of the request span and should be named `mysql.query`.
-
-3. If you see request spans but no `mysql.query` spans:
-  - Confirm `orderservice` has `.AddSource("orderservice-db")` in `Program.cs`.
-  - Confirm `orderservice` code starts activities using the same source name: `new ActivitySource("orderservice-db")`.
-  - Check `orderservice` logs for exceptions (export errors or SQL errors). Example:
-
-```bash
-docker compose logs orderservice --tail=200
-```
-
-4. If SQL statements are failing with an error like `"ordersdb.orders' doesn't exist"`:
-  - Confirm you created the table in the correct database and with the same casing. The demo creates ``Orders`` with backticks; verify with the MySQL client.
-  - Connect to the MySQL container and inspect tables:
-
-```bash
-docker compose exec mysql mysql -u root -p
-# enter password: otelpass
-USE ordersdb;
-SHOW TABLES;
-DESCRIBE `Orders`;
-```
-
 Advanced: change exporter protocol
 
 - The services send OTLP to Jaeger at `http://jaeger:4317` (gRPC). If you want to use OTLP HTTP instead, set the endpoint to `http://jaeger:4318/v1/traces` and ensure the exporter is configured for HTTP protobuf.
-
-Final notes
-
-- The demo intentionally uses a manual ActivitySource for DB tracing to keep dependencies small and avoid EF/Core version issues.
-- If you'd like, I can:
-  - Add a small script to continuously generate load and create many DB spans.
-  - Add a health-check endpoint for MySQL readiness.
-  - Add a Docker healthcheck for the MySQL service.
-
-If you want changes to the README (formatting, extra commands, or adding screenshots), tell me what to include and I'll update it.

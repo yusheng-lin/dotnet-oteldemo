@@ -1,38 +1,51 @@
-version: "3.9"
-
 services:
   jaeger:
     image: jaegertracing/all-in-one:1.58
     ports:
-      - "16686:16686"   # Jaeger UI → http://localhost:16686
-      - "4317:4317"     # OTLP gRPC（重要！）
-      - "4318:4318"     # OTLP HTTP
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     volumes:
       - jaeger-data:/data
+    networks:
+      - app-network
 
   gateway:
     build: ./gateway
     ports:
       - "5000:8080"
     depends_on:
-      - jaeger
-      - orderservice
+      jaeger:
+        condition: service_started
+      orderservice:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     environment:
-      ORDERSERVICE_ENDPOINT : "http://orderservice:8080/order"
-      JAEGER_ENDPOINT : "http://jaeger:4317"
+      ORDERSERVICE_ENDPOINT: "http://orderservice:8080/order"
+      JAEGER_ENDPOINT: "http://jaeger:4317"
+    networks:
+      - app-network
 
   orderservice:
     build: ./orderservice
     depends_on:
-      - jaeger
-      - paymentservice
-      - mysql
+      jaeger:
+        condition: service_started
+      paymentservice:
+        condition: service_started
+      mysql:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     environment:
-      MYSQL_CONNECTION : "server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb"
-      JAEGER_ENDPOINT : "http://jaeger:4317"
-      PAYMENTSERVICE_ENDPOINT : "http://paymentservice:8080/pay"
+      MYSQL_CONNECTION: "server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb"
+      JAEGER_ENDPOINT: "http://jaeger:4317"
+      PAYMENTSERVICE_ENDPOINT: "http://paymentservice:8080/pay"
+    networks:
+      - app-network
 
   mysql:
     image: mysql:8.0.28
@@ -46,14 +59,111 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
       - ./mysql/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    networks:
+      - app-network
 
   paymentservice:
     build: ./paymentservice
     depends_on:
-      - jaeger
+      jaeger:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     environment:
-      JAEGER_ENDPOINT : "http://jaeger:4317"
+      JAEGER_ENDPOINT: "http://jaeger:4317"
+    networks:
+      - app-network
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: echo srvr | nc localhost 2181 || exit 1
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - app-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    healthcheck:
+      test: kafka-broker-api-versions --bootstrap-server kafka:9092
+      start_period: 20s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - app-network
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - xpack.ml.enabled=false
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: curl -s http://localhost:9200/_cluster/health | grep -q '"status":"green"\|"status":"yellow"'
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    networks:
+      - app-network
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.14.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "5044:5044"
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+    networks:
+      - app-network
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.14.0
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
 
 volumes:
   mysql-data:
   jaeger-data:
+  es-data:

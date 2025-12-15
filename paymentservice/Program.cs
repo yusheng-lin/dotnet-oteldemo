@@ -1,7 +1,10 @@
 using OpenTelemetry.Trace;
 using OpenTelemetry.Resources;
+using NLog.Web;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Host.UseNLog();
 
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing
@@ -11,9 +14,12 @@ builder.Services.AddOpenTelemetry()
 
 var app = builder.Build();
 
-app.MapGet("/pay", async () =>
+app.MapGet("/pay", async (ILogger<Program> logger) =>
 {
     await Task.Delay(Random.Shared.Next(80, 200));
+
+    logger.LogInformation("Payment completed");
+
     return "Payment completed";
 });
 

@@ -1,7 +1,10 @@
 using OpenTelemetry.Trace;
 using OpenTelemetry.Resources;
+using NLog.Web;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.ClearProviders();
+builder.Host.UseNLog();
 
 // 關鍵 8 行 OpenTelemetry
 builder.Services.AddOpenTelemetry()
@@ -15,9 +18,10 @@ builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
-app.MapGet("/create-order", async (HttpClient client) =>
+app.MapGet("/create-order", async (HttpClient client, ILogger<Program> logger) =>
 {
     var result = await client.GetStringAsync(Environment.GetEnvironmentVariable("ORDERSERVICE_ENDPOINT"));
+    logger.LogInformation("Order service response: {Response}", result);
     return Results.Ok(new { message = "Order created", detail = result });
 });
 

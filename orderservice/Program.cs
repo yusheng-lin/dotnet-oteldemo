@@ -3,8 +3,12 @@ using OpenTelemetry.Resources;
 using MySqlConnector;
 using Dapper;
 using System.Diagnostics;
+using NLog.Web;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.ClearProviders();
+builder.Host.UseNLog();
 
 // ActivitySource for DB operations (exported by OpenTelemetry)
 var dbActivitySource = new ActivitySource("orderservice-db");
@@ -25,7 +29,7 @@ builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
-app.MapGet("/order", async (HttpClient client) =>
+app.MapGet("/order", async (HttpClient client, ILogger<Program> logger) =>
 {
     try
     {
@@ -51,9 +55,13 @@ app.MapGet("/order", async (HttpClient client) =>
         var orderId = await connection.ExecuteScalarAsync<int>(insertSql,
             new { CreatedAt = DateTime.UtcNow, Description = "New Order" });
 
+        logger.LogInformation("Created order with ID: {OrderId}", orderId);
+        
         if (activity is not null) activity.SetTag("db.order_id", orderId);
 
         var pay = await client.GetStringAsync(Environment.GetEnvironmentVariable("PAYMENTSERVICE_ENDPOINT"));
+        
+        logger.LogInformation("Payment service response: {Response}", pay);
         return $"Order ID: {orderId}";
     }
     catch (Exception ex)
