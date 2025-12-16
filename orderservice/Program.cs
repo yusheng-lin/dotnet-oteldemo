@@ -26,10 +26,12 @@ builder.Services.AddOpenTelemetry()
         .AddOtlpExporter(opt => opt.Endpoint = new Uri(Environment.GetEnvironmentVariable("JAEGER_ENDPOINT"))));
 
 builder.Services.AddHttpClient();
+builder.Services.AddSingleton(dbActivitySource);
+builder.Services.AddScoped(_ => new MySqlConnection(connectionString));
 
 var app = builder.Build();
 
-app.MapGet("/order", async (HttpClient client, ILogger<Program> logger) =>
+app.MapGet("/order", async (HttpClient client, ILogger<Program> logger, ActivitySource dbActivitySource, MySqlConnection connection) =>
 {
     try
     {
@@ -48,7 +50,7 @@ app.MapGet("/order", async (HttpClient client, ILogger<Program> logger) =>
             // we will set the statement before executing each command
         }
 
-        using var connection = new MySqlConnection(connectionString);
+        if (connection.State != System.Data.ConnectionState.Open)
         await connection.OpenAsync();
 
         if (activity is not null) activity.SetTag("db.statement", insertSql);
