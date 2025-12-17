@@ -131,3 +131,67 @@ server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb
 Advanced: change exporter protocol
 
 - The services send OTLP to Jaeger at `http://jaeger:4317` (gRPC). If you want to use OTLP HTTP instead, set the endpoint to `http://jaeger:4318/v1/traces` and ensure the exporter is configured for HTTP protobuf.
+
+Run on Kubernetes
+
+This project includes Kubernetes manifests in the `k8s/` directory to deploy the entire stack to a Kubernetes cluster.
+
+1. **Build Images**:
+   Since the images are built locally in the docker-compose setup, you need to build them and make them available to your cluster.
+
+   ```bash
+   docker build -t gateway:latest ./gateway
+   docker build -t orderservice:latest ./orderservice
+   docker build -t paymentservice:latest ./paymentservice
+   ```
+
+   *If using Minikube*:
+   ```bash
+   minikube image load gateway:latest
+   minikube image load orderservice:latest
+   minikube image load paymentservice:latest
+   ```
+   *If using Kind*:
+   ```bash
+   kind load docker-image gateway:latest
+   kind load docker-image orderservice:latest
+   kind load docker-image paymentservice:latest
+   ```
+
+2. **Deploy to Kubernetes**:
+   Apply all manifests in the `k8s` folder:
+
+   ```bash
+   kubectl apply -f k8s/
+   ```
+
+3. **Access the Application**:
+   The `gateway` service is exposed as a `LoadBalancer` on port `5000`.
+
+   *   **Docker Desktop / Cloud**: Access at `http://localhost:5000`.
+   *   **Minikube**: Run `minikube tunnel` in a separate terminal, then access at `http://localhost:5000`. Or use `minikube service gateway -n otel-demo` to get the URL.
+   *   **Default NameSpace**:
+         ```bash
+         kubectl config set-context --current --namespace otel-demo
+         ```
+
+   **Other Services**:
+   *   **Jaeger UI**: Port-forward to access the UI:
+       ```bash
+       kubectl port-forward svc/jaeger 16686:16686 -n otel-demo
+       ```
+       Visit `http://localhost:16686`.
+   *   **Kibana**: Port-forward to access Kibana:
+       ```bash
+       kubectl port-forward svc/kibana 5601:5601 -n otel-demo
+       ```
+       Visit `http://localhost:5601`.
+   *   **Kafka** Check the kafka messaging
+       ```bash
+       kubectl exec {pod-name} -n otel-demo -- kafka-console-consumer --bootstrap-server localhost:9092 --topic app-logs --from-beginning
+       ```
+4. **Cleanup**:
+   To remove all resources:
+   ```bash
+   kubectl delete -f k8s/
+   ```

@@ -1,0 +1,124 @@
+# Note: You must build these images and make them available to your cluster.
+# Example:
+# docker build -t gateway:latest ./gateway
+# docker build -t orderservice:latest ./orderservice
+# docker build -t paymentservice:latest ./paymentservice
+# If using Minikube: minikube image load gateway:latest ...
+# If using Kind: kind load docker-image gateway:latest ...
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: gateway:latest
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: otel-demo-config
+        env:
+        - name: ORDERSERVICE_ENDPOINT
+          value: "http://orderservice.otel-demo.svc.cluster.local:8080/order"
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: otel-demo
+spec:
+  type: LoadBalancer
+  selector:
+    app: gateway
+  ports:
+    - port: 5000
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderservice
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: orderservice
+  template:
+    metadata:
+      labels:
+        app: orderservice
+    spec:
+      containers:
+      - name: orderservice
+        image: orderservice:latest
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: otel-demo-config
+        env:
+        - name: PAYMENTSERVICE_ENDPOINT
+          value: "http://paymentservice.otel-demo.svc.cluster.local:8080/pay"
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orderservice
+  namespace: otel-demo
+spec:
+  selector:
+    app: orderservice
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paymentservice
+  namespace: otel-demo
+spec:
+  selector:
+    matchLabels:
+      app: paymentservice
+  template:
+    metadata:
+      labels:
+        app: paymentservice
+    spec:
+      containers:
+      - name: paymentservice
+        image: paymentservice:latest
+        imagePullPolicy: IfNotPresent
+        envFrom:
+        - configMapRef:
+            name: otel-demo-config
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paymentservice
+  namespace: otel-demo
+spec:
+  selector:
+    app: paymentservice
+  ports:
+    - port: 8080
+      targetPort: 8080

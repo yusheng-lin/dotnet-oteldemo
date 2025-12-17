@@ -26,6 +26,7 @@ services:
     environment:
       ORDERSERVICE_ENDPOINT: "http://orderservice:8080/order"
       JAEGER_ENDPOINT: "http://jaeger:4317"
+      KAFKA_BROKERS: "kafka:9092"
     networks:
       - app-network
 
@@ -44,6 +45,7 @@ services:
       MYSQL_CONNECTION: "server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb"
       JAEGER_ENDPOINT: "http://jaeger:4317"
       PAYMENTSERVICE_ENDPOINT: "http://paymentservice:8080/pay"
+      KAFKA_BROKERS: "kafka:9092"
     networks:
       - app-network
 
@@ -71,6 +73,7 @@ services:
         condition: service_healthy
     environment:
       JAEGER_ENDPOINT: "http://jaeger:4317"
+      KAFKA_BROKERS: "kafka:9092"
     networks:
       - app-network
 
@@ -142,6 +145,8 @@ services:
         condition: service_healthy
     ports:
       - "5044:5044"
+    environment:
+      KAFKA_BROKERS: "kafka:9092"
     volumes:
       - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
     networks:
