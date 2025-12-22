@@ -9,8 +9,7 @@ This repository contains three services wired with OpenTelemetry and Jaeger coll
 - `paymentservice` (ports: none exposed; called by orderservice)
 - `jaeger` (UI: http://localhost:16686, OTLP gRPC: 4317, OTLP HTTP: 4318)
 - `mysql` (added for demo persistence, default port 3306)
-- `kafka` (Message broker used for centralized logging)
-- `zookeeper` (Required by Kafka for cluster coordination, controller election, and configuration storage)
+- `kafka` (Message broker using KRaft mode - no ZooKeeper required)
 
 What this README covers
 - How to build and run the demo (docker-compose)
@@ -92,7 +91,7 @@ Logging flow (NLog → Kafka → Logstash → Elasticsearch)
 - Kibana connects to Elasticsearch to provide a UI for searching and visualizing logs.
 - Tail a service log file: `docker compose exec orderservice sh -c "tail -n 50 /var/log/app/orderservice.log"`.
 - Validate Kafka → Logstash → ES: `docker compose logs logstash --tail=200`, `curl http://localhost:9200/_cat/indices?v&pretty` and `curl http://localhost:9200/app-logs-*/_count?pretty`.
-- Check kafka message `docker exec -it kafka kafka-console-consumer --bootstrap-server localhost:9092 --topic app-logs --from-beginning`
+- Check kafka message `docker exec -it kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning`
 
 How to use Kibana
 
@@ -188,8 +187,9 @@ This project includes Kubernetes manifests in the `k8s/` directory to deploy the
        Visit `http://localhost:5601`.
    *   **Kafka** Check the kafka messaging
        ```bash
-       kubectl exec {pod-name} -n otel-demo -- kafka-console-consumer --bootstrap-server localhost:9092 --topic app-logs --from-beginning
-       ```
+       kubectl exec {pod-name} -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning
+      ```
+
 4. **Cleanup**:
    To remove all resources:
    ```bash

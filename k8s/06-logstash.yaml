@@ -7,7 +7,7 @@ data:
   logstash.conf: |
     input {
       kafka {
-        bootstrap_servers => "kafka:9092"
+        bootstrap_servers => "${KAFKA_BROKERS}"
         topics => ["app-logs"]
         group_id => "logstash"
         auto_offset_reset => "earliest"
@@ -20,7 +20,7 @@ data:
 
     output {
       elasticsearch {
-        hosts => ["http://elasticsearch:9200"]
+        hosts => ["${ELASTICSEARCH_HOSTS}"]
         index => "app-logs-%{+YYYY.MM.dd}"
       }
     }
@@ -47,6 +47,14 @@ spec:
         volumeMounts:
         - name: pipeline
           mountPath: /usr/share/logstash/pipeline
+        env:
+        - name: ELASTICSEARCH_HOSTS
+          value: "http://elasticsearch.otel-demo.svc.cluster.local:9200"
+        - name: KAFKA_BROKERS
+          valueFrom:
+            configMapKeyRef:
+              name: otel-demo-config
+              key: KAFKA_BROKERS
       volumes:
       - name: pipeline
         configMap:
