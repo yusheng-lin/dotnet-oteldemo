@@ -18,6 +18,8 @@ builder.Services.AddHttpClient();
 
 var app = builder.Build();
 
+app.MapGet("/health", () => Results.Ok(new { status = "Healthy", timestamp = DateTime.UtcNow }));
+
 app.MapGet("/create-order", async (HttpClient client, ILogger<Program> logger) =>
 {
     var result = await client.GetStringAsync(Environment.GetEnvironmentVariable("ORDERSERVICE_ENDPOINT"));

@@ -10,6 +10,8 @@ This repository contains three services wired with OpenTelemetry and Jaeger coll
 - `jaeger` (UI: http://localhost:16686, OTLP gRPC: 4317, OTLP HTTP: 4318)
 - `mysql` (added for demo persistence, default port 3306)
 - `kafka` (Message broker using KRaft mode - no ZooKeeper required)
+- `kong` (API Gateway: http://localhost:8000, Admin: http://localhost:8001)
+- `keycloak` (Identity Provider: http://localhost:8080)
 
 What this README covers
 - How to build and run the demo (docker-compose)
@@ -188,7 +190,9 @@ The gateway controller should be running in the `envoy-gateway-system` namespace
 
    **Gateway API hostname (gateway.otel-demo.local)**
 
-   If you apply the Gateway API manifest [k8s/11-gateway.yaml](k8s/11-gateway.yaml), traffic is routed via an Envoy `Gateway` on port `80` using the hostname `gateway.otel-demo.local`. To use this hostname, add a hosts file entry pointing to the Gateway's external IP:
+   If you apply the Gateway API manifest [k8s/11-gateway.yaml](k8s/11-gateway.yaml), traffic is routed via an Envoy `Gateway` on port `80` using the hostname `gateway.otel-demo.local`. This Gateway forwards all traffic to **Kong** (port 8000), which then routes requests to the backend services based on its configuration.
+
+   To use this hostname, add a hosts file entry pointing to the Gateway's external IP:
 
    1. Get the external IP of the Envoy Gateway:
       ```bash
@@ -219,13 +223,154 @@ The gateway controller should be running in the `envoy-gateway-system` namespace
        kubectl port-forward svc/kibana 5601:5601 -n otel-demo
        ```
        Visit `http://localhost:5601`.
-   *   **Kafka** Check the kafka messaging
+   *   **Kafka**: Check the kafka messaging:
        ```bash
        kubectl exec {pod-name} -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning
+       ```
+
+   *   **Kong**:
+    *   **Proxy**: Port-forward to access the Kong Proxy:
+        ```bash
+        kubectl port-forward svc/kong 8000:8000 -n otel-demo
+        ```
+        Access via `http://localhost:8000`.
+    *   **Admin API**: Port-forward to access the Kong Admin API:
+        ```bash
+        kubectl port-forward svc/kong 8001:8001 -n otel-demo
+        ```
+        Access via `http://localhost:8001`.
+    *   **Manager GUI**: Port-forward to access the Kong Manager GUI:
+        ```bash
+        kubectl port-forward svc/kong 8002:8002 -n otel-demo
+        ```
+        Access via `http://localhost:8002`.
+
+  *   **Keycloak**: Port-forward to access Keycloak:
+      ```bash
+      kubectl port-forward svc/keycloak 8080:8080 -n otel-demo
       ```
+      Visit `http://localhost:8080`.
+      **Credentials**:
+      - Admin Console: `http://localhost:8080/admin` (User: `admin`, Pass: `admin`)
 
 4. **Cleanup**:
    To remove all resources:
    ```bash
    kubectl delete -f k8s/
+   ```
+
+## Kong API Gateway & Keycloak Integration
+
+The demo includes Kong API Gateway for routing and Keycloak for authentication.
+
+### Architecture
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Client    │────▶│    Kong     │────▶│   Gateway   │
+│  (Browser)  │     │  (Port 8000)│     │  (Port 8080)│
+└─────────────┘     └──────┬──────┘     └─────────────┘
+                           │
+                           │ Token Validation
+                           ▼
+                    ┌─────────────┐
+                    │  Keycloak   │
+                    │  (Port 8080)│
+                    └─────────────┘
+```
+
+### Default Credentials
+
+| Service | Username | Password | URL |
+|---------|----------|----------|-----|
+| Keycloak Admin | `admin` | `admin` | http://localhost:8080 |
+| Test User | `testuser` | `testpass123` | - |
+| Admin User | `admin` (realm) | `adminpass123` | - |
+
+### Keycloak Setup
+
+- **Realm**: `demo`
+- **Clients**:
+  - `kong-client`: For Kong API Gateway (confidential client)
+  - `demo-app`: For frontend applications (public client)
+- **Users**: `testuser` and `admin` pre-configured
+
+### Get an Access Token
+
+```bash
+# Get token using Resource Owner Password Grant
+curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password" \
+  -d "client_id=demo-app" \
+  -d "username=testuser" \
+  -d "password=testpass123" \
+  -d "scope=openid" | jq -r '.access_token'
+```
+
+### Configure Kong Routes (after startup)
+
+Run the configuration script to set up Kong routes:
+
+```bash
+# On Linux/Mac
+./kong/configure-kong.sh
+
+# On Windows (PowerShell)
+docker compose exec kong sh -c "apk add curl jq && sh /configure-kong.sh"
+```
+
+Or manually via Kong Admin API:
+
+```bash
+# Create service
+curl -X POST http://localhost:8001/services \
+  -d "name=gateway-service" \
+  -d "url=http://gateway:8080"
+
+# Create route
+curl -X POST http://localhost:8001/services/gateway-service/routes \
+  -d "name=gateway-route" \
+  -d "paths[]=/api" \
+  -d "strip_path=true"
+```
+
+### Access API via Kong
+
+```bash
+# Get access token
+TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+  -d "grant_type=password" \
+  -d "client_id=demo-app" \
+  -d "username=testuser" \
+  -d "password=testpass123" \
+  -d "scope=openid" | jq -r '.access_token')
+
+# Call API through Kong (after configuring routes)
+# Option A: Via Port-forward
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/create-order
+
+# Option B: Via K8s Gateway (using hostname)
+kubectl port-forward svc/keycloak 8080:8080 -n otel-demo
+
+TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password" \
+  -d "client_id=demo-app" \
+  -d "username=testuser" \
+  -d "password=testpass123" \
+  -d "scope=openid" | jq -r '.access_token')
+
+curl -i -H "Authorization: Bearer $TOKEN" http://gateway.otel-demo.local/api/create-order
+```
+
+### Useful URLs
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| Kong Proxy | http://localhost:8000 | API Gateway endpoint |
+| Kong Admin | http://localhost:8001 | Kong Admin API |
+| Kong Manager | http://localhost:8002 | Kong Admin GUI |
+| Keycloak | http://localhost:8080 | Keycloak Admin Console |
+| Keycloak OIDC Config | http://localhost:8080/realms/demo/.well-known/openid-configuration | OIDC Discovery |
    ```
