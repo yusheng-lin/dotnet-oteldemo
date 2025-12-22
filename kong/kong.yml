@@ -1,0 +1,34 @@
+_format_version: "3.0"
+_transform: true
+
+services:
+  - name: gateway-service
+    url: http://gateway:8080
+    routes:
+      - name: gateway-route
+        paths:
+          - /api
+        strip_path: true
+    plugins:
+      - name: openid-connect
+        config:
+          issuer: http://keycloak:8080/realms/demo
+          client_id: kong-client
+          client_secret: kong-client-secret
+          auth_methods:
+            - bearer
+          scopes_required:
+            - openid
+          verify_signature: true
+          verify_claims: true
+          cache_tokens: true
+          cache_introspection: true
+
+  # Health check endpoint (unprotected)
+  - name: health-service
+    url: http://gateway:8080
+    routes:
+      - name: health-route
+        paths:
+          - /health
+        strip_path: false

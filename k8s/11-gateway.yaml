@@ -40,5 +40,5 @@ spec:
         type: PathPrefix
         value: /
     backendRefs:
-    - name: gateway
-      port: 8080
+    - name: kong
+      port: 8000
