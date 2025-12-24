@@ -135,6 +135,21 @@ Run on Kubernetes
 
 This project includes Kubernetes manifests in the `k8s/` directory to deploy the entire stack to a Kubernetes cluster.
 
+### Prerequisites: Install Envoy Gateway
+
+Before deploying the application, you must install the Envoy Gateway controller to handle the Gateway API resources:
+
+```bash
+# Install Envoy Gateway (latest version)
+kubectl apply -f https://github.com/envoyproxy/gateway/releases/download/v1.0.0/install.yaml
+
+# Verify the installation
+kubectl get deployment -n envoy-gateway-system
+kubectl get pods -n envoy-gateway-system
+```
+
+The gateway controller should be running in the `envoy-gateway-system` namespace before you proceed with application deployment.
+
 1. **Build Images**:
    Since the images are built locally in the docker-compose setup, you need to build them and make them available to your cluster.
 
@@ -165,14 +180,33 @@ This project includes Kubernetes manifests in the `k8s/` directory to deploy the
    ```
 
 3. **Access the Application**:
-   The `gateway` service is exposed as a `LoadBalancer` on port `5000`.
-
-   *   **Docker Desktop / Cloud**: Access at `http://localhost:5000`.
-   *   **Minikube**: Run `minikube tunnel` in a separate terminal, then access at `http://localhost:5000`. Or use `minikube service gateway -n otel-demo` to get the URL.
+   *   **Minikube**: Run `minikube tunnel` in a separate terminal
    *   **Default NameSpace**:
          ```bash
          kubectl config set-context --current --namespace otel-demo
          ```
+
+   **Gateway API hostname (gateway.otel-demo.local)**
+
+   If you apply the Gateway API manifest [k8s/11-gateway.yaml](k8s/11-gateway.yaml), traffic is routed via an Envoy `Gateway` on port `80` using the hostname `gateway.otel-demo.local`. To use this hostname, add a hosts file entry pointing to the Gateway's external IP:
+
+   1. Get the external IP of the Envoy Gateway:
+      ```bash
+      kubectl get svc -n otel-demo
+      # Look for the Gateway service external IP (varies by environment)
+      ```
+
+   2. Add a hosts file entry for `gateway.otel-demo.local`:
+      - Windows:
+        - Open Notepad as Administrator
+        - File → Open → `C:\Windows\System32\drivers\etc\hosts` (show All Files)
+        - Add a line: `<EXTERNAL-IP> gateway.otel-demo.local`
+        - Example (Docker Desktop / Minikube tunnel): `127.0.0.1 gateway.otel-demo.local`
+      - macOS / Linux:
+        ```bash
+        # Replace <EXTERNAL-IP> with the value from kubectl
+        echo "<EXTERNAL-IP> gateway.otel-demo.local" | sudo tee -a /etc/hosts
+        ```
 
    **Other Services**:
    *   **Jaeger UI**: Port-forward to access the UI:
