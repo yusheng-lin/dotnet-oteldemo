@@ -39,11 +39,10 @@ metadata:
   name: gateway
   namespace: otel-demo
 spec:
-  type: LoadBalancer
   selector:
     app: gateway
   ports:
-    - port: 5000
+    - port: 8080
       targetPort: 8080
 
 ---
