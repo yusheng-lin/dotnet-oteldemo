@@ -27,10 +27,10 @@ echo "Kong Admin API is ready!"
 echo "Creating gateway service..."
 curl -s -X POST "$KONG_ADMIN_URL/services" \
     -H "Content-Type: application/json" \
-    -d "{
-        \"name\": \"gateway-service\",
-        \"url\": \"$GATEWAY_URL\"
-    }" | $JQ_CMD
+    -d '{
+        "name": "gateway-service",
+        "url": "'"$GATEWAY_URL"'"
+    }' | $JQ_CMD
 
 # Create route for the gateway service
 echo "Creating gateway route..."
@@ -113,10 +113,10 @@ echo ""
 echo "Creating health service..."
 curl -s -X POST "$KONG_ADMIN_URL/services" \
     -H "Content-Type: application/json" \
-    -d "{
-        \"name\": \"health-service\",
-        \"url\": \"$GATEWAY_URL\"
-    }" | $JQ_CMD
+    -d '{
+        "name": "health-service",
+        "url": "'"$GATEWAY_URL"'"
+    }' | $JQ_CMD
 
 echo "Creating health route..."
 curl -s -X POST "$KONG_ADMIN_URL/services/health-service/routes" \

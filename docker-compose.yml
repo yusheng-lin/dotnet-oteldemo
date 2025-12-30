@@ -137,12 +137,44 @@ services:
   # ===================
   # Observability
   # ===================
+  otel-collector:
+    image: otel/opentelemetry-collector:0.100.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./jaeger/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  otel-collector-consumer:
+    image: otel/opentelemetry-collector:0.100.0
+    command: ["--config=/etc/otel-collector-consumer-config.yaml"]
+    volumes:
+      - ./jaeger/otel-collector-consumer-config.yaml:/etc/otel-collector-consumer-config.yaml
+    environment:
+      - KAFKA_BROKERS=kafka:9092
+      - JAEGER_ENDPOINT=jaeger:4317
+    depends_on:
+      kafka:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    networks:
+      - app-network
+
   jaeger:
     image: jaegertracing/all-in-one:1.58
     ports:
       - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
+      # - "4317:4317" # Exposed via collector now, though Jaeger can still listen internally
+      # - "4318:4318"
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     volumes:
@@ -155,7 +187,7 @@ services:
     ports:
       - "5000:8080"
     depends_on:
-      jaeger:
+      otel-collector:
         condition: service_started
       orderservice:
         condition: service_started
@@ -163,7 +195,7 @@ services:
         condition: service_healthy
     environment:
       ORDERSERVICE_ENDPOINT: "http://orderservice:8080/order"
-      JAEGER_ENDPOINT: "http://jaeger:4317"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       KAFKA_BROKERS: "kafka:9092"
     networks:
       - app-network
@@ -171,7 +203,7 @@ services:
   orderservice:
     build: ./orderservice
     depends_on:
-      jaeger:
+      otel-collector:
         condition: service_started
       paymentservice:
         condition: service_started
@@ -181,7 +213,7 @@ services:
         condition: service_healthy
     environment:
       MYSQL_CONNECTION: "server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb"
-      JAEGER_ENDPOINT: "http://jaeger:4317"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       PAYMENTSERVICE_ENDPOINT: "http://paymentservice:8080/pay"
       KAFKA_BROKERS: "kafka:9092"
     networks:
@@ -205,12 +237,12 @@ services:
   paymentservice:
     build: ./paymentservice
     depends_on:
-      jaeger:
+      otel-collector:
         condition: service_started
       kafka:
         condition: service_healthy
     environment:
-      JAEGER_ENDPOINT: "http://jaeger:4317"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4317"
       KAFKA_BROKERS: "kafka:9092"
     networks:
       - app-network

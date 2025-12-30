@@ -4,6 +4,6 @@ metadata:
   name: otel-demo-config
   namespace: otel-demo
 data:
-  JAEGER_ENDPOINT: "http://jaeger.otel-demo.svc.cluster.local:4317"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.otel-demo.svc.cluster.local:4317"
   MYSQL_CONNECTION: "server=mysql.otel-demo.svc.cluster.local;port=3306;user=otel;password=otelpass;database=ordersdb"
   KAFKA_BROKERS: "kafka.otel-demo.svc.cluster.local:9092"
