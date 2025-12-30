@@ -1,0 +1,24 @@
+receivers:
+  kafka:
+    protocol_version: 2.0.0
+    brokers:
+      - "${KAFKA_BROKERS}"
+    topic: otlp_spans
+    encoding: otlp_proto
+    group_id: otel-collector-consumer
+
+processors:
+  batch:
+
+exporters:
+  otlp:
+    endpoint: "${JAEGER_ENDPOINT}"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [kafka]
+      processors: [batch]
+      exporters: [otlp]

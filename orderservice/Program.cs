@@ -23,7 +23,7 @@ builder.Services.AddOpenTelemetry()
         .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("orderservice"))
         .AddAspNetCoreInstrumentation()
         .AddHttpClientInstrumentation()
-        .AddOtlpExporter(opt => opt.Endpoint = new Uri(Environment.GetEnvironmentVariable("JAEGER_ENDPOINT"))));
+        .AddOtlpExporter(opt => opt.Endpoint = new Uri(Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT"))));
 
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton(dbActivitySource);

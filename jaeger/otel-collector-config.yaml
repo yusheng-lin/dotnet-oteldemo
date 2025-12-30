@@ -1,0 +1,25 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+
+exporters:
+  kafka:
+    protocol_version: 2.0.0
+    brokers:
+      - "${KAFKA_BROKERS}"
+    topic: otlp_spans
+    encoding: otlp_proto
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [kafka]

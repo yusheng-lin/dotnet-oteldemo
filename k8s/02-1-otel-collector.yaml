@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-conf
+  namespace: otel-demo
+  labels:
+    app: otel-collector
+data:
+  otel-collector-config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: "0.0.0.0:4317"
+          http:
+            endpoint: "0.0.0.0:4318"
+
+    processors:
+      batch:
+
+    exporters:
+      kafka:
+        protocol_version: 2.0.0
+        brokers:
+          - "${KAFKA_BROKERS}"
+        topic: otlp_spans
+        encoding: otlp_proto
+
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [kafka]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector
+  namespace: otel-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector
+  template:
+    metadata:
+      labels:
+        app: otel-collector
+    spec:
+      containers:
+      - name: otel-collector
+        image: otel/opentelemetry-collector:0.100.0
+        args: ["--config=/etc/otel-collector-config.yaml"]
+        env:
+        - name: KAFKA_BROKERS
+          value: "kafka.otel-demo.svc.cluster.local:9092"
+        ports:
+        - containerPort: 4317
+        - containerPort: 4318
+        volumeMounts:
+        - name: otel-collector-config-vol
+          mountPath: /etc/otel-collector-config.yaml
+          subPath: otel-collector-config.yaml
+      volumes:
+      - name: otel-collector-config-vol
+        configMap:
+          name: otel-collector-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: otel-demo
+spec:
+  selector:
+    app: otel-collector
+  ports:
+  - name: otlp-grpc
+    port: 4317
+    targetPort: 4317
+    protocol: TCP
+  - name: otlp-http
+    port: 4318
+    targetPort: 4318
+    protocol: TCP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-consumer-conf
+  namespace: otel-demo
+  labels:
+    app: otel-collector-consumer
+data:
+  otel-collector-consumer-config.yaml: |
+    receivers:
+      kafka:
+        protocol_version: 2.0.0
+        brokers:
+          - "${KAFKA_BROKERS}"
+        topic: otlp_spans
+        encoding: otlp_proto
+        group_id: otel-collector-consumer
+
+    processors:
+      batch:
+
+    exporters:
+      otlp:
+        endpoint: "${JAEGER_ENDPOINT}"
+        tls:
+          insecure: true
+
+    service:
+      pipelines:
+        traces:
+          receivers: [kafka]
+          processors: [batch]
+          exporters: [otlp]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otel-collector-consumer
+  namespace: otel-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: otel-collector-consumer
+  template:
+    metadata:
+      labels:
+        app: otel-collector-consumer
+    spec:
+      containers:
+      - name: otel-collector-consumer
+        image: otel/opentelemetry-collector:0.100.0
+        args: ["--config=/etc/otel-collector-consumer-config.yaml"]
+        env:
+        - name: KAFKA_BROKERS
+          value: "kafka.otel-demo.svc.cluster.local:9092"
+        - name: JAEGER_ENDPOINT
+          value: "jaeger.otel-demo.svc.cluster.local:4317"
+        volumeMounts:
+        - name: otel-collector-consumer-config-vol
+          mountPath: /etc/otel-collector-consumer-config.yaml
+          subPath: otel-collector-consumer-config.yaml
+      volumes:
+      - name: otel-collector-consumer-config-vol
+        configMap:
+          name: otel-collector-consumer-conf

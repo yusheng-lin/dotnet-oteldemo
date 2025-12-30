@@ -10,7 +10,7 @@ builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing
         .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("paymentservice"))
         .AddAspNetCoreInstrumentation()
-        .AddOtlpExporter(opt => opt.Endpoint = new Uri(Environment.GetEnvironmentVariable("JAEGER_ENDPOINT"))));
+        .AddOtlpExporter(opt => opt.Endpoint = new Uri(Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT"))));
 
 var app = builder.Build();
 

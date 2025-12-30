@@ -2,16 +2,58 @@
 
 Lightweight demo showing .NET services with OpenTelemetry -> Jaeger (OTLP) and a simple orders flow persisted to MySQL.
 
-This repository contains three services wired with OpenTelemetry and Jaeger collector in `docker-compose.yml`:
+This repository contains three services wired with OpenTelemetry, an OpenTelemetry Collector, and Jaeger in `docker-compose.yml`:
 
 - `gateway`  (ports: host 5000 -> container 8080)
 - `orderservice` (ports: none exposed; called by gateway)
 - `paymentservice` (ports: none exposed; called by orderservice)
-- `jaeger` (UI: http://localhost:16686, OTLP gRPC: 4317, OTLP HTTP: 4318)
+- `otel-collector` (Receives OTLP data and forwards to Kafka)
+- `otel-collector-consumer` (Consumes OTLP data from Kafka and forwards to Jaeger)
+- `jaeger` (UI: http://localhost:16686)
 - `mysql` (added for demo persistence, default port 3306)
 - `kafka` (Message broker using KRaft mode - no ZooKeeper required)
 - `kong` (API Gateway: http://localhost:8000, Admin: http://localhost:8001)
 - `keycloak` (Identity Provider: http://localhost:8080)
+
+Tracing Flow (Services → OTEL Collector → Kafka → OTEL Collector Consumer → Jaeger)
+
+```
+┌─────────────┐   ┌──────────────┐   ┌──────────────┐
+│   Gateway   │   │ OrderService │   │PaymentService│
+└──────┬──────┘   └──────┬───────┘   └──────┬───────┘
+       │                 │                  │
+       │          OTLP (gRPC/HTTP)          │
+       └─────────────────┬──────────────────┘
+                         │
+                         ▼
+                ┌──────────────────┐
+                │  OTEL Collector  │
+                │ (batch/process)  │
+                └────────┬─────────┘
+                         │
+                         ▼
+                ┌──────────────────┐
+                │      Kafka       │
+                │(topic:otlp_spans)│
+                └────────┬─────────┘
+                         │
+                         ▼
+                ┌──────────────────┐
+                │  OTEL Collector  │
+                │    (Consumer)    │
+                └────────┬─────────┘
+                         │
+                         ▼
+                ┌──────────────────┐
+                │      Jaeger      │
+                │   (Visualize)    │
+                └──────────────────┘
+```
+
+- Each service is configured with `OTEL_EXPORTER_OTLP_ENDPOINT` pointing to `http://otel-collector:4317`.
+- The `otel-collector` uses `otel-collector-config.yaml` to define its pipelines, receiving OTLP data and exporting it to Kafka (topic `otlp_spans`).
+- The `otel-collector-consumer` uses `otel-collector-consumer-config.yaml` to consume spans from Kafka and export them to Jaeger.
+- Jaeger receives data from the consumer collector and provides the UI for trace visualization.
 
 What this README covers
 - How to build and run the demo (docker-compose)
@@ -23,27 +65,48 @@ Requirements
 - Docker & Docker Compose
 - .NET 8 SDK (for local builds if you want to `dotnet build`)
 
-Run the demo (recommended)
+## Run with Docker Compose
 
-1. From the repository root, build & start containers:
+From the repository root, build & start containers:
 
 ```bash
 docker compose up -d --build
 ```
 
-2. Generate traffic (gateway exposes a convenience endpoint):
+### Verification (Docker Compose)
 
+1. **Generate traffic**:
 ```bash
-# Create an order via the gateway
+# Direct access to gateway
 curl -s http://localhost:5000/create-order
 
-# Or call the orderservice directly (inside compose network):
-curl -s http://localhost:5000/create-order
+# Via Kong API Gateway (Authenticated)
+TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+  -d "grant_type=password" \
+  -d "client_id=demo-app" \
+  -d "username=testuser" \
+  -d "password=testpass123" \
+  -d "scope=openid" | jq -r '.access_token')
+
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/create-order
 ```
 
-3. Open Jaeger UI
+2. **Open Jaeger UI**: Visit [http://localhost:16686](http://localhost:16686) to visualize traces.
 
-Visit http://localhost:16686. Use the Service dropdown to select `gateway`, `orderservice`, or `paymentservice`.
+3. **Check Logs**:
+```bash
+# Tail a service log file
+docker compose exec orderservice sh -c "tail -n 50 /var/log/app/orderservice.log"
+
+# Check Kafka messages
+docker exec -it kafka /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning
+
+# Verify Elasticsearch indices
+curl http://localhost:9200/_cat/indices?v&pretty
+curl http://localhost:9200/app-logs-*/_count?pretty
+```
+
+4. **Kibana**: Visit [http://localhost:5601](http://localhost:5601) (Follow the "How to use Kibana" section below for initial setup).
 
 Logging flow (NLog → Kafka → Logstash → Elasticsearch)
 
@@ -131,9 +194,9 @@ server=mysql;port=3306;user=otel;password=otelpass;database=ordersdb
 
 Advanced: change exporter protocol
 
-- The services send OTLP to Jaeger at `http://jaeger:4317` (gRPC). If you want to use OTLP HTTP instead, set the endpoint to `http://jaeger:4318/v1/traces` and ensure the exporter is configured for HTTP protobuf.
+- The services send OTLP to the OpenTelemetry Collector at `http://otel-collector:4317` (gRPC). The collector then forwards this to Jaeger. If you want to change how services talk to the collector, you can update the `OTEL_EXPORTER_OTLP_ENDPOINT` and the collector's `receivers` configuration in `otel-collector-config.yaml`.
 
-Run on Kubernetes
+## Run on Kubernetes
 
 This project includes Kubernetes manifests in the `k8s/` directory to deploy the entire stack to a Kubernetes cluster.
 
@@ -153,7 +216,7 @@ kubectl get pods -n envoy-gateway-system
 The gateway controller should be running in the `envoy-gateway-system` namespace before you proceed with application deployment.
 
 1. **Build Images**:
-   Since the images are built locally in the docker-compose setup, you need to build them and make them available to your cluster.
+   Build images and make them available to your cluster:
 
    ```bash
    docker build -t gateway:latest ./gateway
@@ -161,122 +224,189 @@ The gateway controller should be running in the `envoy-gateway-system` namespace
    docker build -t paymentservice:latest ./paymentservice
    ```
 
-   *If using Minikube*:
+   *Minikube/Kind*: Load images into the cluster nodes:
    ```bash
-   minikube image load gateway:latest
-   minikube image load orderservice:latest
-   minikube image load paymentservice:latest
-   ```
-   *If using Kind*:
-   ```bash
-   kind load docker-image gateway:latest
-   kind load docker-image orderservice:latest
-   kind load docker-image paymentservice:latest
+   # Minikube
+   minikube image load gateway:latest orderservice:latest paymentservice:latest
+   # Kind
+   kind load docker-image gateway:latest orderservice:latest paymentservice:latest
    ```
 
 2. **Deploy to Kubernetes**:
-   Apply all manifests in the `k8s` folder:
-
    ```bash
    kubectl apply -f k8s/
+   # Switch to the demo namespace
+   kubectl config set-context --current --namespace otel-demo
    ```
 
-3. **Access the Application**:
-   *   **Minikube**: Run `minikube tunnel` in a separate terminal
-   *   **Default NameSpace**:
-         ```bash
-         kubectl config set-context --current --namespace otel-demo
-         ```
+3. **Configure Gateway Hostname**:
+   Traffic is routed via an Envoy Gateway using the hostname `gateway.otel-demo.local`. Add a hosts file entry pointing to the Gateway's external IP:
 
-   **Gateway API hostname (gateway.otel-demo.local)**
+   ```bash
+   # Get the external IP (e.g., 127.0.0.1 if using minikube tunnel)
+   kubectl get svc -n envoy-gateway-system
+   # Add to /etc/hosts (Linux/macOS)
+   echo "<EXTERNAL-IP> gateway.otel-demo.local" | sudo tee -a /etc/hosts
+   ```
 
-   If you apply the Gateway API manifest [k8s/11-gateway.yaml](k8s/11-gateway.yaml), traffic is routed via an Envoy `Gateway` on port `80` using the hostname `gateway.otel-demo.local`. This Gateway forwards all traffic to **Kong** (port 8000), which then routes requests to the backend services based on its configuration.
+### Verification (Kubernetes)
 
-   To use this hostname, add a hosts file entry pointing to the Gateway's external IP:
+1. **Generate traffic**:
+```bash
+# Get an access token from Keycloak (Port-forward required, see below)
+kubectl port-forward svc/keycloak 8080:8080 -n otel-demo &
 
-   1. Get the external IP of the Envoy Gateway:
-      ```bash
-      kubectl get svc -n otel-demo
-      # Look for the Gateway service external IP (varies by environment)
-      ```
+TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=password" \
+  -d "client_id=demo-app" \
+  -d "username=testuser" \
+  -d "password=testpass123" \
+  -d "scope=openid" | jq -r '.access_token')
 
-   2. Add a hosts file entry for `gateway.otel-demo.local`:
-      - Windows:
-        - Open Notepad as Administrator
-        - File → Open → `C:\Windows\System32\drivers\etc\hosts` (show All Files)
-        - Add a line: `<EXTERNAL-IP> gateway.otel-demo.local`
-        - Example (Docker Desktop / Minikube tunnel): `127.0.0.1 gateway.otel-demo.local`
-      - macOS / Linux:
-        ```bash
-        # Replace <EXTERNAL-IP> with the value from kubectl
-        echo "<EXTERNAL-IP> gateway.otel-demo.local" | sudo tee -a /etc/hosts
-        ```
+# Access via Gateway hostname
+curl -i -H "Authorization: Bearer $TOKEN" http://gateway.otel-demo.local/api/create-order
+```
 
-   **Other Services**:
-   *   **Jaeger UI**: Port-forward to access the UI:
-       ```bash
-       kubectl port-forward svc/jaeger 16686:16686 -n otel-demo
-       ```
-       Visit `http://localhost:16686`.
-   *   **Kibana**: Port-forward to access Kibana:
-       ```bash
-       kubectl port-forward svc/kibana 5601:5601 -n otel-demo
-       ```
-       Visit `http://localhost:5601`.
-   *   **Kafka**: Check the kafka messaging:
-       ```bash
-       kubectl exec {pod-name} -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning
-       ```
+2. **Access UIs (Port-forwarding)**:
+```bash
+# Jaeger UI: http://localhost:16686
+kubectl port-forward svc/jaeger 16686:16686 -n otel-demo &
 
-   *   **Kong**:
-    *   **Proxy**: Port-forward to access the Kong Proxy:
-        ```bash
-        kubectl port-forward svc/kong 8000:8000 -n otel-demo
-        ```
-        Access via `http://localhost:8000`.
-    *   **Admin API**: Port-forward to access the Kong Admin API:
-        ```bash
-        kubectl port-forward svc/kong 8001:8001 -n otel-demo
-        ```
-        Access via `http://localhost:8001`.
-    *   **Manager GUI**: Port-forward to access the Kong Manager GUI:
-        ```bash
-        kubectl port-forward svc/kong 8002:8002 -n otel-demo
-        ```
-        Access via `http://localhost:8002`.
+# Kibana: http://localhost:5601
+kubectl port-forward svc/kibana 5601:5601 -n otel-demo &
 
-  *   **Keycloak**: Port-forward to access Keycloak:
-      ```bash
-      kubectl port-forward svc/keycloak 8080:8080 -n otel-demo
-      ```
-      Visit `http://localhost:8080`.
-      **Credentials**:
-      - Admin Console: `http://localhost:8080/admin` (User: `admin`, Pass: `admin`)
+# Kong Manager: http://localhost:8002
+kubectl port-forward svc/kong 8002:8002 -n otel-demo &
+```
+
+3. **Check Logs/Messaging**:
+```bash
+# Check Kafka messages
+kubectl exec -it <kafka-pod-name> -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning
+```
 
 4. **Cleanup**:
-   To remove all resources:
-   ```bash
-   kubectl delete -f k8s/
-   ```
+```bash
+kubectl delete -f k8s/
+```
 
 ## Kong API Gateway & Keycloak Integration
 
 The demo includes Kong API Gateway for routing and Keycloak for authentication.
 
-### Architecture
+### Complete System Architecture
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Client    │────▶│    Kong     │────▶│   Gateway   │
-│  (Browser)  │     │  (Port 8000)│     │  (Port 8080)│
-└─────────────┘     └──────┬──────┘     └─────────────┘
-                           │
-                           │ Token Validation
-                           ▼
-                    ┌─────────────┐
-                    │  Keycloak   │
-                    │  (Port 8080)│
-                    └─────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│                              CLIENT APPLICATION                                      │
+└───────────────────────────────┬──────────────────────────────────────────────────────┘
+                                │
+                    ┌───────────┴──────────┐
+                    │  1. Request Token    │
+                    ▼                      │ 2. JWT Token
+            ┌───────────────┐              │
+            │   Keycloak    │◀─────────────┘
+            │  Port: 8080   │
+            │ (Auth Server) │
+            └───────────────┘
+                                │
+                    ┌───────────┴──────────┐
+                    │  3. API Request      │
+                    │  (Bearer Token)      │
+                    ▼                      │
+            ┌───────────────┐              │
+            │     Kong      │              │ 4. Validate Token
+            │  Port: 8000   │──────────────┘    (OIDC Plugin)
+            │ (API Gateway) │
+            └───────┬───────┘
+                    │ 5. Forward Request
+                    ▼
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│                           APPLICATION SERVICES LAYER                                 │
+│                                                                                      │
+│   ┌─────────────┐         ┌──────────────┐         ┌───────────────┐                 │
+│   │   Gateway   │────────▶│ OrderService │────────▶│PaymentService │                 │
+│   │  Port: 8080 │  HTTP   │  Port: 8080  │  HTTP   │  Port: 8080   │                 │
+│   └──────┬──────┘         └──────┬───────┘         └───────┬───────┘                 │
+│          │                       │                         │                         │
+│          │                       │ 6. DB Operations        │                         │
+│          │                       └─────────┐               │                         │
+│          │                                 ▼               │                         │
+│          │                          ┌─────────────┐        │                         │
+│          │                          │    MySQL    │        │                         │
+│          │                          │  Port: 3306 │        │                         │
+│          │                          │(ordersdb DB)│        │                         │
+│          │                          └─────────────┘        │                         │
+│          │                                                 │                         │
+└──────────┼─────────────────────────────────────────────────┼─────────────────────────┘
+           │                                                 │
+           │ 7. OTLP Traces (gRPC/HTTP)                      │
+           └─────────────────────┬───────────────────────────┘
+                                 │
+                                 ▼
+┌──────────────────────────────────────────────────────────────────────────────────────┐
+│                          OBSERVABILITY LAYER                                         │
+│                                                                                      │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐    │
+│  │                            TRACING PIPELINE                                  │    │
+│  │                                                                              │    │
+│  │    ┌──────────────────┐      ┌────────────────┐      ┌───────────────────┐   │    │
+│  │    │  OTEL Collector  │─────▶│     Kafka      │─────▶│  OTEL Collector   │   │    │
+│  │    │   (Producer)     │      │ Topic:         │      │    (Consumer)     │   │    │
+│  │    │  Port: 4317/4318 │      │  otlp_spans    │      │                   │   │    │
+│  │    └──────────────────┘      └────────────────┘      └─────────-┬────────┘   │    │
+│  │                                                                 │            │    │
+│  │                                                                 ▼            │    │
+│  │                                                         ┌───────────────┐    │    │
+│  │                                                         │    Jaeger     │    │    │
+│  │                                                         │ Port: 16686   │    │    │
+│  │                                                         │(Trace Visual) │    │    │
+│  │                                                         └───────────────┘    │    │
+│  └──────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                      │
+│  ┌──────────────────────────────────────────────────────────────────────────────┐    │
+│  │                            LOGGING PIPELINE                                  │    │
+│  │                                                                              │    │
+│  │    ┌──────────────────┐      ┌────────────────┐      ┌───────────────────┐   │    │
+│  │    │   NLog (All      │─────▶│     Kafka      │─────▶│    Logstash       │   │    │
+│  │    │    Services)     │      │ Topic:         │      │                   │   │    │
+│  │    │ + File Rotation  │      │  app-logs      │      │                   │   │    │
+│  │    └──────────────────┘      └────────────────┘      └─────────-┬────────┘   │    │
+│  │                                                                 │            │    │
+│  │                                                                 ▼            │    │
+│  │                                                         ┌───────────────┐    │    │
+│  │                                                         │Elasticsearch  │    │    │
+│  │                                                         │ Port: 9200    │    │    │
+│  │                                                         │Index:app-logs*│    │    │
+│  │                                                         └───────┬───────┘    │    │
+│  │                                                                 │            │    │
+│  │                                                                 ▼            │    │
+│  │                                                         ┌───────────────┐    │    │
+│  │                                                         │    Kibana     │    │    │
+│  │                                                         │  Port: 5601   │    │    │
+│  │                                                         │ (Log Visual)  │    │    │
+│  │                                                         └───────────────┘    │    │
+│  └──────────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+
+Data Flow Summary:
+1. Client requests JWT token from Keycloak
+2. Keycloak returns JWT token
+3. Client makes API request to Kong with Bearer token
+4. Kong validates token with Keycloak (OIDC plugin)
+5. Kong forwards authenticated request to Gateway service
+6. Gateway → OrderService → PaymentService (HTTP calls)
+7. OrderService persists data to MySQL
+8. All services send OTLP traces to OTEL Collector (Producer)
+9. OTEL Collector buffers traces in Kafka (otlp_spans topic)
+10. OTEL Collector Consumer reads from Kafka and forwards to Jaeger
+11. All services write logs via NLog (file + Kafka)
+12. Logstash consumes logs from Kafka (app-logs topic)
+13. Logstash indexes logs into Elasticsearch
+14. Kibana provides UI for log visualization
+15. Jaeger provides UI for trace visualization
 ```
 
 ### Default Credentials
@@ -287,83 +417,6 @@ The demo includes Kong API Gateway for routing and Keycloak for authentication.
 | Test User | `testuser` | `testpass123` | - |
 | Admin User | `admin` (realm) | `adminpass123` | - |
 
-### Keycloak Setup
-
-- **Realm**: `demo`
-- **Clients**:
-  - `kong-client`: For Kong API Gateway (confidential client)
-  - `demo-app`: For frontend applications (public client)
-- **Users**: `testuser` and `admin` pre-configured
-
-### Get an Access Token
-
-```bash
-# Get token using Resource Owner Password Grant
-curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=password" \
-  -d "client_id=demo-app" \
-  -d "username=testuser" \
-  -d "password=testpass123" \
-  -d "scope=openid" | jq -r '.access_token'
-```
-
-### Configure Kong Routes (after startup)
-
-Run the configuration script to set up Kong routes:
-
-```bash
-# On Linux/Mac
-./kong/configure-kong.sh
-
-# On Windows (PowerShell)
-docker compose exec kong sh -c "apk add curl jq && sh /configure-kong.sh"
-```
-
-Or manually via Kong Admin API:
-
-```bash
-# Create service
-curl -X POST http://localhost:8001/services \
-  -d "name=gateway-service" \
-  -d "url=http://gateway:8080"
-
-# Create route
-curl -X POST http://localhost:8001/services/gateway-service/routes \
-  -d "name=gateway-route" \
-  -d "paths[]=/api" \
-  -d "strip_path=true"
-```
-
-### Access API via Kong
-
-```bash
-# Get access token
-TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
-  -d "grant_type=password" \
-  -d "client_id=demo-app" \
-  -d "username=testuser" \
-  -d "password=testpass123" \
-  -d "scope=openid" | jq -r '.access_token')
-
-# Call API through Kong (after configuring routes)
-# Option A: Via Port-forward
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/create-order
-
-# Option B: Via K8s Gateway (using hostname)
-kubectl port-forward svc/keycloak 8080:8080 -n otel-demo
-
-TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=password" \
-  -d "client_id=demo-app" \
-  -d "username=testuser" \
-  -d "password=testpass123" \
-  -d "scope=openid" | jq -r '.access_token')
-
-curl -i -H "Authorization: Bearer $TOKEN" http://gateway.otel-demo.local/api/create-order
-```
-
 ### Useful URLs
 
 | Service | URL | Description |
@@ -373,4 +426,3 @@ curl -i -H "Authorization: Bearer $TOKEN" http://gateway.otel-demo.local/api/cre
 | Kong Manager | http://localhost:8002 | Kong Admin GUI |
 | Keycloak | http://localhost:8080 | Keycloak Admin Console |
 | Keycloak OIDC Config | http://localhost:8080/realms/demo/.well-known/openid-configuration | OIDC Discovery |
-   ```
