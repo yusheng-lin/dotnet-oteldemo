@@ -22,7 +22,9 @@ data:
       kafka:
         protocol_version: 2.0.0
         brokers:
-          - "${KAFKA_BROKERS}"
+          - kafka-0.kafka.otel-demo.svc.cluster.local:9092
+          - kafka-1.kafka.otel-demo.svc.cluster.local:9092
+          - kafka-2.kafka.otel-demo.svc.cluster.local:9092
         topic: otlp_spans
         encoding: otlp_proto
 
@@ -54,7 +56,10 @@ spec:
         args: ["--config=/etc/otel-collector-config.yaml"]
         env:
         - name: KAFKA_BROKERS
-          value: "kafka.otel-demo.svc.cluster.local:9092"
+          valueFrom:
+            configMapKeyRef:
+              name: otel-demo-config
+              key: KAFKA_BROKERS
         ports:
         - containerPort: 4317
         - containerPort: 4318
@@ -98,7 +103,9 @@ data:
       kafka:
         protocol_version: 2.0.0
         brokers:
-          - "${KAFKA_BROKERS}"
+          - kafka-0.kafka.otel-demo.svc.cluster.local:9092
+          - kafka-1.kafka.otel-demo.svc.cluster.local:9092
+          - kafka-2.kafka.otel-demo.svc.cluster.local:9092
         topic: otlp_spans
         encoding: otlp_proto
         group_id: otel-collector-consumer
@@ -140,7 +147,10 @@ spec:
         args: ["--config=/etc/otel-collector-consumer-config.yaml"]
         env:
         - name: KAFKA_BROKERS
-          value: "kafka.otel-demo.svc.cluster.local:9092"
+          valueFrom:
+            configMapKeyRef:
+              name: otel-demo-config
+              key: KAFKA_BROKERS
         - name: JAEGER_ENDPOINT
           value: "jaeger.otel-demo.svc.cluster.local:4317"
         volumeMounts:

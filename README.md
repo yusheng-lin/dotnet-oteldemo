@@ -258,6 +258,9 @@ curl -i -H "Authorization: Bearer $TOKEN" http://gateway.otel-demo.local/api/cre
 # Jaeger UI: http://localhost:16686
 kubectl port-forward svc/jaeger 16686:16686 -n otel-demo &
 
+# Elasticsearch: http://localhost:9200
+kubectl port-forward svc/elasticsearch 9200:9200 -n otel-demo &
+
 # Kibana: http://localhost:5601
 kubectl port-forward svc/kibana 5601:5601 -n otel-demo &
 

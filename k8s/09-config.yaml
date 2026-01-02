@@ -6,4 +6,4 @@ metadata:
 data:
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.otel-demo.svc.cluster.local:4317"
   MYSQL_CONNECTION: "server=mysql.otel-demo.svc.cluster.local;port=3306;user=otel;password=otelpass;database=ordersdb"
-  KAFKA_BROKERS: "kafka.otel-demo.svc.cluster.local:9092"
+  KAFKA_BROKERS: "kafka-0.kafka.otel-demo.svc.cluster.local:9092,kafka-1.kafka.otel-demo.svc.cluster.local:9092,kafka-2.kafka.otel-demo.svc.cluster.local:9092"
