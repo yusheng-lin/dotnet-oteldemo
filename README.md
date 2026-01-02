@@ -249,12 +249,22 @@ The gateway controller should be running in the `envoy-gateway-system` namespace
    echo "<EXTERNAL-IP> gateway.otel-demo.local" | sudo tee -a /etc/hosts
    ```
 
+### Kafka Cluster on Kubernetes
+
+The Kubernetes deployment runs a 3-broker Kafka cluster using a `StatefulSet` for high availability. This is a more robust setup compared to the single broker in Docker Compose.
+
+- **Replicas**: The `StatefulSet` is configured with `replicas: 3`, creating three Kafka pods (`kafka-0`, `kafka-1`, `kafka-2`).
+- **KRaft Mode**: The cluster runs in KRaft mode, without ZooKeeper. The controllers are co-located with the brokers.
+- **Quorum**: The `controller.quorum.voters` is configured to include all three brokers, ensuring consensus.
+- **Replication**: Internal topics are configured with `offsets.topic.replication.factor=3` and `transaction.state.log.replication.factor=3`. The minimum in-sync replicas (`transaction.state.log.min.isr`) is set to 2, which means a transaction can be acknowledged only if it has been written to at least two brokers. This setup can tolerate the loss of one broker.
+- **Service Discovery**: A headless service (`kafka`) is used for DNS discovery of the brokers within the cluster. The advertised listeners are configured to use the pod's specific DNS name (e.g., `kafka-0.kafka.otel-demo.svc.cluster.local`).
+
 ### Verification (Kubernetes)
 
 1. **Generate traffic**:
 ```bash
 # Get an access token from Keycloak (Port-forward required, see below)
-kubectl port-forward svc/keycloak 8080:8080 -n otel-demo &
+kubectl port-forward svc/keycloak 8080:8080 -n otel-demo > /dev/null 2>&1 &
 
 TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
   -H "Content-Type: application/x-www-form-urlencoded" \
@@ -271,19 +281,22 @@ curl -i -H "Authorization: Bearer $TOKEN" http://gateway.otel-demo.local/api/cre
 2. **Access UIs (Port-forwarding)**:
 ```bash
 # Jaeger UI: http://localhost:16686
-kubectl port-forward svc/jaeger 16686:16686 -n otel-demo &
+kubectl port-forward svc/jaeger 16686:16686 -n otel-demo > /dev/null 2>&1 &
+
+# Elasticsearch: http://localhost:9200
+kubectl port-forward svc/elasticsearch 9200:9200 -n otel-demo > /dev/null 2>&1 &
 
 # Kibana: http://localhost:5601
-kubectl port-forward svc/kibana 5601:5601 -n otel-demo &
+kubectl port-forward svc/kibana 5601:5601 -n otel-demo > /dev/null 2>&1 &
 
 # Kong Manager: http://localhost:8002
-kubectl port-forward svc/kong 8002:8002 -n otel-demo &
+kubectl port-forward svc/kong 8002:8002 -n otel-demo > /dev/null 2>&1 &
 ```
 
 3. **Check Logs/Messaging**:
 ```bash
-# Check Kafka messages
-kubectl exec -it <kafka-pod-name> -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning
+# Check Kafka messages (e.g., from pod kafka-0)
+kubectl exec -it kafka-0 -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic app-logs --from-beginning
 ```
 
 4. **Cleanup**:
