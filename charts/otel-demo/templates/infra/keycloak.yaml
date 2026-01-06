@@ -1,0 +1,267 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-import
+  namespace: {{ .Release.Namespace }}
+data:
+  realm-export.json: |
+    {
+      "realm": "demo",
+      "enabled": true,
+      "sslRequired": "none",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": true,
+      "editUsernameAllowed": false,
+      "bruteForceProtected": true,
+      "accessTokenLifespan": 300,
+      "ssoSessionIdleTimeout": 1800,
+      "ssoSessionMaxLifespan": 36000,
+      "roles": {
+        "realm": [
+          {
+            "name": "user",
+            "description": "Regular user role"
+          },
+          {
+            "name": "admin",
+            "description": "Administrator role"
+          }
+        ]
+      },
+      "clients": [
+        {
+          "clientId": "kong-client",
+          "name": "Kong API Gateway Client",
+          "enabled": true,
+          "publicClient": false,
+          "secret": "kong-client-secret",
+          "protocol": "openid-connect",
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": true,
+          "authorizationServicesEnabled": false,
+          "redirectUris": [
+            "http://localhost:8000/*",
+            "http://kong:8000/*"
+          ],
+          "webOrigins": [
+            "*"
+          ],
+          "attributes": {
+            "access.token.lifespan": "300"
+          },
+          "protocolMappers": [
+            {
+              "name": "audience-mapper",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "config": {
+                "included.client.audience": "kong-client",
+                "id.token.claim": "true",
+                "access.token.claim": "true"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "demo-app",
+          "name": "Demo Application Client",
+          "enabled": true,
+          "publicClient": true,
+          "protocol": "openid-connect",
+          "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": true,
+          "redirectUris": [
+            "http://localhost:3000/*",
+            "http://localhost:5000/*"
+          ],
+          "webOrigins": [
+            "*"
+          ]
+        }
+      ],
+      "users": [
+        {
+          "username": "testuser",
+          "enabled": true,
+          "emailVerified": true,
+          "firstName": "Test",
+          "lastName": "User",
+          "email": "testuser@example.com",
+          "credentials": [
+            {
+              "type": "password",
+              "value": "testpass123",
+              "temporary": false
+            }
+          ],
+          "realmRoles": [
+            "user"
+          ]
+        },
+        {
+          "username": "admin",
+          "enabled": true,
+          "emailVerified": true,
+          "firstName": "Admin",
+          "lastName": "User",
+          "email": "admin@example.com",
+          "credentials": [
+            {
+              "type": "password",
+              "value": "adminpass123",
+              "temporary": false
+            }
+          ],
+          "realmRoles": [
+            "admin",
+            "user"
+          ]
+        }
+      ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: keycloak-db-pvc
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.keycloak.dbStorage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak-database
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: keycloak-database
+spec:
+  selector:
+    matchLabels:
+      app: keycloak-database
+  template:
+    metadata:
+      labels:
+        app: keycloak-database
+    spec:
+      containers:
+      - name: postgres
+        image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
+        env:
+        - name: POSTGRES_USER
+          value: {{ .Values.keycloak.postgresUser | quote }}
+        - name: POSTGRES_PASSWORD
+          value: {{ .Values.keycloak.postgresPassword | quote }}
+        - name: POSTGRES_DB
+          value: {{ .Values.keycloak.postgresDb | quote }}
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: keycloak-db-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: keycloak-db-data
+        persistentVolumeClaim:
+          claimName: keycloak-db-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak-database
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: keycloak-database
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+      - name: keycloak
+        image: "{{ .Values.images.keycloak.repository }}:{{ .Values.images.keycloak.tag }}"
+        args: ["start-dev", "--import-realm"]
+        env:
+        - name: KC_DB
+          value: postgres
+        - name: KC_DB_URL
+          value: jdbc:postgresql://keycloak-database:5432/keycloak
+        - name: KC_DB_USERNAME
+          value: {{ .Values.keycloak.postgresUser | quote }}
+        - name: KC_DB_PASSWORD
+          value: {{ .Values.keycloak.postgresPassword | quote }}
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: {{ .Values.keycloak.adminUser | quote }}
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: {{ .Values.keycloak.adminPassword | quote }}
+        - name: KC_HEALTH_ENABLED
+          value: "true"
+        ports:
+        - containerPort: 8080
+          name: http
+        - containerPort: 9000
+          name: management
+        volumeMounts:
+        - name: realm-import
+          mountPath: /opt/keycloak/data/import/realm-export.json
+          subPath: realm-export.json
+          readOnly: true
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 9000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 9000
+          initialDelaySeconds: 60
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: realm-import
+        configMap:
+          name: keycloak-realm-import
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: keycloak
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+    - port: 9000
+      targetPort: 9000
+      name: management

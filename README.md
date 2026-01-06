@@ -232,14 +232,31 @@ The gateway controller should be running in the `envoy-gateway-system` namespace
    kind load docker-image gateway:latest orderservice:latest paymentservice:latest
    ```
 
-2. **Deploy to Kubernetes**:
+2. **Deploy to Kubernetes (Manual)**:
    ```bash
    kubectl apply -f k8s/
    # Switch to the demo namespace
    kubectl config set-context --current --namespace otel-demo
    ```
 
-3. **Configure Gateway Hostname**:
+3. **Deploy with Helm (Recommended)**:
+   The project includes a Helm chart for a more manageable deployment.
+
+   ```bash
+   # Install the chart
+   helm install otel-demo ./charts/otel-demo --namespace otel-demo --create-namespace
+
+   # Verify the installation
+   helm list -n otel-demo
+   ```
+
+   **Customizing the deployment**:
+   You can override any value in `charts/otel-demo/values.yaml`. For example, to change the MySQL password:
+   ```bash
+   helm install otel-demo ./charts/otel-demo --set mysql.password=custompass -n otel-demo
+   ```
+
+4. **Configure Gateway Hostname**:
    Traffic is routed via an Envoy Gateway using the hostname `gateway.otel-demo.local`. Add a hosts file entry pointing to the Gateway's external IP:
 
    ```bash
@@ -301,7 +318,11 @@ kubectl exec -it kafka-0 -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.s
 
 4. **Cleanup**:
 ```bash
+# If deployed via manual manifests
 kubectl delete -f k8s/
+
+# If deployed via Helm
+helm uninstall otel-demo -n otel-demo
 ```
 
 ## Kong API Gateway & Keycloak Integration

@@ -1,0 +1,123 @@
+# Note: You must build these images and make them available to your cluster.
+# Example:
+# docker build -t gateway:latest ./gateway
+# docker build -t orderservice:latest ./orderservice
+# docker build -t paymentservice:latest ./paymentservice
+# If using Minikube: minikube image load gateway:latest ...
+# If using Kind: kind load docker-image gateway:latest ...
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      containers:
+      - name: gateway
+        image: "{{ .Values.images.appGateway.repository }}:{{ .Values.images.appGateway.tag }}"
+        imagePullPolicy: {{ .Values.images.appGateway.pullPolicy }}
+        envFrom:
+        - configMapRef:
+            name: otel-demo-config
+        env:
+        - name: ORDERSERVICE_ENDPOINT
+          value: "http://orderservice.{{ .Release.Namespace }}.svc.cluster.local:8080/order"
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: gateway
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orderservice
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: orderservice
+  template:
+    metadata:
+      labels:
+        app: orderservice
+    spec:
+      containers:
+      - name: orderservice
+        image: "{{ .Values.images.orderService.repository }}:{{ .Values.images.orderService.tag }}"
+        imagePullPolicy: {{ .Values.images.orderService.pullPolicy }}
+        envFrom:
+        - configMapRef:
+            name: otel-demo-config
+        env:
+        - name: PAYMENTSERVICE_ENDPOINT
+          value: "http://paymentservice.{{ .Release.Namespace }}.svc.cluster.local:8080/pay"
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orderservice
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: orderservice
+  ports:
+    - port: 8080
+      targetPort: 8080
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paymentservice
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: paymentservice
+  template:
+    metadata:
+      labels:
+        app: paymentservice
+    spec:
+      containers:
+      - name: paymentservice
+        image: "{{ .Values.images.paymentService.repository }}:{{ .Values.images.paymentService.tag }}"
+        imagePullPolicy: {{ .Values.images.paymentService.pullPolicy }}
+        envFrom:
+        - configMapRef:
+            name: otel-demo-config
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paymentservice
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: paymentservice
+  ports:
+    - port: 8080
+      targetPort: 8080

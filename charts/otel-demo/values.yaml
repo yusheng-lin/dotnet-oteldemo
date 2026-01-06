@@ -1,0 +1,89 @@
+# Default values for otel-demo.
+
+images:
+  mysql:
+    repository: mysql
+    tag: 8.0.28
+  otelCollector:
+    repository: otel/opentelemetry-collector
+    tag: 0.100.0
+  jaeger:
+    repository: jaegertracing/all-in-one
+    tag: 1.58
+  elasticsearch:
+    repository: docker.elastic.co/elasticsearch/elasticsearch
+    tag: 8.14.0
+  kibana:
+    repository: docker.elastic.co/kibana/kibana
+    tag: 8.14.0
+  kafka:
+    repository: apache/kafka
+    tag: 3.7.0
+  logstash:
+    repository: docker.elastic.co/logstash/logstash
+    tag: 8.14.0
+  postgres:
+    repository: postgres
+    tag: 17-alpine
+  kong:
+    repository: kong
+    tag: 3.5
+  keycloak:
+    repository: quay.io/keycloak/keycloak
+    tag: latest
+  appGateway:
+    repository: gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  orderService:
+    repository: orderservice
+    tag: latest
+    pullPolicy: IfNotPresent
+  paymentService:
+    repository: paymentservice
+    tag: latest
+    pullPolicy: IfNotPresent
+  alpine:
+    repository: alpine
+    tag: 3.19
+
+mysql:
+  rootPassword: "otelpass"
+  user: "otel"
+  password: "otelpass"
+  database: "ordersdb"
+  storage: 1Gi
+
+kafka:
+  replicas: 3
+  storage: 1Gi
+  clusterId: "MkU3OEVBNTcwNTJENDM2Qk"
+
+elasticsearch:
+  storage: 1Gi
+  javaOpts: "-Xms512m -Xmx512m"
+
+jaeger:
+  storage: 1Gi
+
+kong:
+  dbStorage: 1Gi
+  postgresUser: kong
+  postgresPassword: kongpass
+  postgresDb: kong
+
+keycloak:
+  dbStorage: 1Gi
+  postgresUser: keycloak
+  postgresPassword: keycloakpass
+  postgresDb: keycloak
+  adminUser: admin
+  adminPassword: admin
+
+# Global configuration applied to apps
+config:
+  kafkaBrokers: "kafka-0.kafka.{{ .Release.Namespace }}.svc.cluster.local:9092,kafka-1.kafka.{{ .Release.Namespace }}.svc.cluster.local:9092,kafka-2.kafka.{{ .Release.Namespace }}.svc.cluster.local:9092" 
+  # Note: The original manifest used a simpler service DNS "kafka.otel-demo.svc.cluster.local:9092" which pointed to the headless service.
+  # But for the brokers list in env vars, usually providing the bootstrap service is enough.
+  # The original config map had: KAFKA_BROKERS: "kafka.otel-demo.svc.cluster.local:9092"
+  kafkaBootstrapServer: "kafka.{{ .Release.Namespace }}.svc.cluster.local:9092"
