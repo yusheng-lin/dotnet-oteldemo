@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-pipeline
+  namespace: {{ .Release.Namespace }}
+data:
+  logstash.conf: |
+    input {
+      kafka {
+        bootstrap_servers => "${KAFKA_BROKERS}"
+        topics => ["app-logs"]
+        group_id => "logstash"
+        auto_offset_reset => "earliest"
+          codec => json {
+            target => "message"
+            ecs_compatibility => "v8"
+        }
+      }
+    }
+
+    output {
+      elasticsearch {
+        hosts => ["${ELASTICSEARCH_HOSTS}"]
+        index => "app-logs-%{+YYYY.MM.dd}"
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logstash
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app: logstash
+  template:
+    metadata:
+      labels:
+        app: logstash
+    spec:
+      containers:
+      - name: logstash
+        image: "{{ .Values.images.logstash.repository }}:{{ .Values.images.logstash.tag }}"
+        ports:
+        - containerPort: 5044
+        volumeMounts:
+        - name: pipeline
+          mountPath: /usr/share/logstash/pipeline
+        env:
+        - name: ELASTICSEARCH_HOSTS
+          value: "http://elasticsearch.{{ .Release.Namespace }}.svc.cluster.local:9200"
+        - name: KAFKA_BROKERS
+          valueFrom:
+            configMapKeyRef:
+              name: otel-demo-config
+              key: KAFKA_BROKERS
+      volumes:
+      - name: pipeline
+        configMap:
+          name: logstash-pipeline
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: logstash
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: logstash
+  ports:
+    - port: 5044
+      targetPort: 5044

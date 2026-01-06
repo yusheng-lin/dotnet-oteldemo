@@ -232,11 +232,28 @@ The gateway controller should be running in the `envoy-gateway-system` namespace
    kind load docker-image gateway:latest orderservice:latest paymentservice:latest
    ```
 
-2. **Deploy to Kubernetes**:
+2. **Deploy to Kubernetes (Manual)**:
    ```bash
    kubectl apply -f k8s/
    # Switch to the demo namespace
    kubectl config set-context --current --namespace otel-demo
+   ```
+
+3. **Deploy with Helm (Recommended)**:
+   The project includes a Helm chart for a more manageable deployment.
+
+   ```bash
+   # Install the chart
+   helm install otel-demo ./charts/otel-demo --namespace otel-demo --create-namespace
+
+   # Verify the installation
+   helm list -n otel-demo
+   ```
+
+   **Customizing the deployment**:
+   You can override any value in `charts/otel-demo/values.yaml`. For example, to change the MySQL password:
+   ```bash
+   helm install otel-demo ./charts/otel-demo --set mysql.password=custompass -n otel-demo
    ```
 
 3. **Configure Gateway Hostname**:
@@ -248,6 +265,20 @@ The gateway controller should be running in the `envoy-gateway-system` namespace
    # Add to /etc/hosts (Linux/macOS)
    echo "<EXTERNAL-IP> gateway.otel-demo.local" | sudo tee -a /etc/hosts
    ```
+
+### Envoy Gateway Services
+
+The `envoy-gateway-system` namespace contains multiple services:
+
+- **`envoy-gateway`**: The control plane service that manages Gateway API resources. It watches for Gateway, HTTPRoute, and other API objects and configures the data plane proxies accordingly. (Ports: 18000/18001)
+- **`envoy-gateway-metrics-service`**: Exposes Prometheus metrics from the Envoy Gateway controller for monitoring and observability. (Port: 19001)
+- **`envoy-otel-demo-otel-demo-gateway-*`**: The actual data plane proxy service created by Envoy Gateway for your `otel-demo-gateway` Gateway resource. This is a LoadBalancer service that exposes port 80 for HTTP traffic routing to your Kong backend.
+
+The data plane proxy service is what you'll use to access your application. Get its external IP:
+
+```bash
+kubectl get svc -n envoy-gateway-system | grep envoy-otel-demo
+```
 
 ### Kafka Cluster on Kubernetes
 
@@ -301,7 +332,11 @@ kubectl exec -it kafka-0 -n otel-demo -- /opt/kafka/bin/kafka-console-consumer.s
 
 4. **Cleanup**:
 ```bash
+# If deployed via manual manifests
 kubectl delete -f k8s/
+
+# If deployed via Helm
+helm uninstall otel-demo -n otel-demo
 ```
 
 ## Kong API Gateway & Keycloak Integration

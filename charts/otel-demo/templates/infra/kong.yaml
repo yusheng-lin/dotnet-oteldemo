@@ -1,0 +1,197 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kong-db-pvc
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.kong.dbStorage }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong-database
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kong-database
+spec:
+  selector:
+    matchLabels:
+      app: kong-database
+  template:
+    metadata:
+      labels:
+        app: kong-database
+    spec:
+      containers:
+      - name: postgres
+        image: "{{ .Values.images.postgres.repository }}:{{ .Values.images.postgres.tag }}"
+        env:
+        - name: POSTGRES_USER
+          value: {{ .Values.kong.postgresUser | quote }}
+        - name: POSTGRES_PASSWORD
+          value: {{ .Values.kong.postgresPassword | quote }}
+        - name: POSTGRES_DB
+          value: {{ .Values.kong.postgresDb | quote }}
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: kong-db-data
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: kong-db-data
+        persistentVolumeClaim:
+          claimName: kong-db-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-database
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: kong-database
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kong-migrations
+  namespace: {{ .Release.Namespace }}
+spec:
+  template:
+    metadata:
+      name: kong-migrations
+    spec:
+      containers:
+      - name: kong-migrations
+        image: "{{ .Values.images.kong.repository }}:{{ .Values.images.kong.tag }}"
+        command: [ "kong", "migrations", "bootstrap" ]
+        env:
+        - name: KONG_DATABASE
+          value: postgres
+        - name: KONG_PG_HOST
+          value: kong-database
+        - name: KONG_PG_USER
+          value: {{ .Values.kong.postgresUser | quote }}
+        - name: KONG_PG_PASSWORD
+          value: {{ .Values.kong.postgresPassword | quote }}
+        - name: KONG_PG_DATABASE
+          value: {{ .Values.kong.postgresDb | quote }}
+      restartPolicy: OnFailure
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kong
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: kong
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kong
+  template:
+    metadata:
+      labels:
+        app: kong
+    spec:
+      initContainers:
+      - name: wait-for-migrations
+        image: "{{ .Values.images.kong.repository }}:{{ .Values.images.kong.tag }}"
+        command: ['sh', '-c', 'until kong migrations list; do echo waiting for migrations; sleep 2; done']
+        env:
+        - name: KONG_DATABASE
+          value: postgres
+        - name: KONG_PG_HOST
+          value: kong-database
+        - name: KONG_PG_USER
+          value: {{ .Values.kong.postgresUser | quote }}
+        - name: KONG_PG_PASSWORD
+          value: {{ .Values.kong.postgresPassword | quote }}
+      containers:
+      - name: kong
+        image: "{{ .Values.images.kong.repository }}:{{ .Values.images.kong.tag }}"
+        env:
+        - name: KONG_DATABASE
+          value: postgres
+        - name: KONG_PG_HOST
+          value: kong-database
+        - name: KONG_PG_DATABASE
+          value: {{ .Values.kong.postgresDb | quote }}
+        - name: KONG_PG_USER
+          value: {{ .Values.kong.postgresUser | quote }}
+        - name: KONG_PG_PASSWORD
+          value: {{ .Values.kong.postgresPassword | quote }}
+        - name: KONG_PROXY_ACCESS_LOG
+          value: /dev/stdout
+        - name: KONG_ADMIN_ACCESS_LOG
+          value: /dev/stdout
+        - name: KONG_PROXY_ERROR_LOG
+          value: /dev/stderr
+        - name: KONG_ADMIN_ERROR_LOG
+          value: /dev/stderr
+        - name: KONG_ADMIN_LISTEN
+          value: 0.0.0.0:8001
+        - name: KONG_ADMIN_GUI_URL
+          value: http://localhost:8002
+        ports:
+        - containerPort: 8000
+          name: proxy
+        - containerPort: 8443
+          name: proxy-ssl
+        - containerPort: 8001
+          name: admin
+        - containerPort: 8444
+          name: admin-ssl
+        - containerPort: 8002
+          name: manager
+        readinessProbe:
+          exec:
+            command:
+            - kong
+            - health
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 10
+        livenessProbe:
+          exec:
+            command:
+            - kong
+            - health
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 10
+          failureThreshold: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: kong
+  ports:
+    - port: 8000
+      targetPort: 8000
+      name: proxy
+    - port: 8443
+      targetPort: 8443
+      name: proxy-ssl
+    - port: 8001
+      targetPort: 8001
+      name: admin
+    - port: 8444
+      targetPort: 8444
+      name: admin-ssl
+    - port: 8002
+      targetPort: 8002
+      name: manager

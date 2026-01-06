@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-demo-config
+  namespace: {{ .Release.Namespace }}
+data:
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.{{ .Release.Namespace }}.svc.cluster.local:4317"
+  MYSQL_CONNECTION: "server=mysql.{{ .Release.Namespace }}.svc.cluster.local;port=3306;user={{ .Values.mysql.user }};password={{ .Values.mysql.password }};database={{ .Values.mysql.database }}"
+  KAFKA_BROKERS: {{ tpl .Values.config.kafkaBootstrapServer . | quote }}
