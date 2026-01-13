@@ -339,6 +339,72 @@ kubectl delete -f k8s/
 helm uninstall otel-demo -n otel-demo
 ```
 
+## GitLab CI/CD Deployment
+
+This project includes a `.gitlab-ci.yml` file for automated deployment to a local Minikube cluster.
+
+### Prerequisites
+
+1. **Install GitLab Runner** on your local machine:
+   ```bash
+   # Download and install GitLab Runner
+   # https://docs.gitlab.com/runner/install/
+
+   # Register the runner with shell executor and minikube tag
+   gitlab-runner register --executor shell --tag-list "minikube"
+   ```
+
+2. **Ensure Minikube is running**:
+   ```bash
+   minikube start
+
+   # Optional: Enable registry addon for local image storage
+   minikube addons enable registry
+   ```
+
+3. **Verify kubectl access**:
+   ```bash
+   kubectl config use-context minikube
+   kubectl get nodes
+   ```
+
+### Pipeline Jobs
+
+| Job | Stage | Description |
+|-----|-------|-------------|
+| `build-images` | build | Builds Docker images for gateway, orderservice, and paymentservice using Minikube's Docker daemon |
+| `deploy-infra` | deploy | Deploys infrastructure components (MySQL, Kafka, Jaeger, Elasticsearch, etc.) |
+| `deploy-apps` | deploy | Deploys application services and configurations |
+| `deploy-all` | deploy | Single job to deploy everything at once (manual trigger) |
+| `cleanup` | deploy | Removes all resources from the namespace |
+| `verify` | deploy | Shows deployment status |
+
+### Running the Pipeline
+
+1. **Automatic Trigger**: Push to `main` or `master` branch to trigger the pipeline automatically.
+
+2. **Manual Trigger**: Go to **CI/CD > Pipelines** in GitLab and click **Run pipeline**.
+
+3. **Run specific jobs manually**:
+   - `deploy-all`: Deploy everything in one step
+   - `cleanup`: Remove all deployed resources
+
+### Customization
+
+You can customize the pipeline by modifying the variables in `.gitlab-ci.yml`:
+
+```yaml
+variables:
+  K8S_NAMESPACE: otel-demo        # Kubernetes namespace
+  REGISTRY: localhost:5000         # Image registry
+```
+
+### Troubleshooting
+
+- **Runner not picking up jobs**: Ensure the runner has the `minikube` tag and is active.
+- **kubectl context issues**: The runner must have access to the Minikube kubeconfig.
+- **Image build failures**: Ensure Minikube's Docker daemon is accessible (`eval $(minikube docker-env)`).
+
 ## Kong API Gateway & Keycloak Integration
 
 The demo includes Kong API Gateway for routing and Keycloak for authentication.
