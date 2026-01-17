@@ -3,29 +3,33 @@ stages:
   - deploy
 
 variables:
-  # Use Minikube's Docker daemon
-  DOCKER_HOST: ""
-  # Kubernetes namespace
   K8S_NAMESPACE: otel-demo
-  # Image registry (using Minikube's local registry)
-  REGISTRY: localhost:5000
+  # GitLab Container Registry
+  REGISTRY: ${CI_REGISTRY}
+  IMAGE_TAG: ${CI_COMMIT_SHORT_SHA}
 
-# Build stage - builds Docker images for all services
 build-images:
   stage: build
+  image: docker:27-cli
   tags:
-    - minikube  # Use a runner with minikube access
+    - minikube
   before_script:
-    # Point to Minikube's Docker daemon
-    - eval $(minikube docker-env)
+    - echo "Logging in to GitLab Container Registry..."
+    - docker login -u ${CI_REGISTRY_USER} -p ${CI_REGISTRY_PASSWORD} ${CI_REGISTRY}
   script:
-    - echo "Building Docker images..."
-    # Build gateway service
-    - docker build -t ${REGISTRY}/gateway:${CI_COMMIT_SHORT_SHA} -t ${REGISTRY}/gateway:latest ./gateway
-    # Build order service
-    - docker build -t ${REGISTRY}/orderservice:${CI_COMMIT_SHORT_SHA} -t ${REGISTRY}/orderservice:latest ./orderservice
-    # Build payment service
-    - docker build -t ${REGISTRY}/paymentservice:${CI_COMMIT_SHORT_SHA} -t ${REGISTRY}/paymentservice:latest ./paymentservice
+    - echo "Building Docker images and pushing to GitLab Registry..."
+    # Build and push gateway
+    - docker build -t ${CI_REGISTRY_IMAGE}/gateway:${IMAGE_TAG} -t ${CI_REGISTRY_IMAGE}/gateway:latest ./gateway
+    - docker push ${CI_REGISTRY_IMAGE}/gateway:${IMAGE_TAG}
+    - docker push ${CI_REGISTRY_IMAGE}/gateway:latest
+    # Build and push orderservice
+    - docker build -t ${CI_REGISTRY_IMAGE}/orderservice:${IMAGE_TAG} -t ${CI_REGISTRY_IMAGE}/orderservice:latest ./orderservice
+    - docker push ${CI_REGISTRY_IMAGE}/orderservice:${IMAGE_TAG}
+    - docker push ${CI_REGISTRY_IMAGE}/orderservice:latest
+    # Build and push paymentservice
+    - docker build -t ${CI_REGISTRY_IMAGE}/paymentservice:${IMAGE_TAG} -t ${CI_REGISTRY_IMAGE}/paymentservice:latest ./paymentservice
+    - docker push ${CI_REGISTRY_IMAGE}/paymentservice:${IMAGE_TAG}
+    - docker push ${CI_REGISTRY_IMAGE}/paymentservice:latest
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "master"
@@ -34,33 +38,36 @@ build-images:
 # Deploy infrastructure components
 deploy-infra:
   stage: deploy
+  image: 
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
   tags:
     - minikube
+  variables:
+    KUBECONFIG: /root/.kube/config
   before_script:
-    - kubectl config use-context minikube
+    - echo "=== Checking kubectl ==="
+    - kubectl version --client
+    - kubectl cluster-info
   script:
     - echo "Deploying infrastructure to Minikube..."
-    # Create namespace
     - kubectl apply -f k8s/00-namespace.yaml
-    # Deploy MySQL
+    # Install Gateway API CRDs
+    - echo "Installing Gateway API CRDs..."
+    - kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.0.0/standard-install.yaml
+    # Install Envoy Gateway
+    - echo "Installing Envoy Gateway..."
+    - kubectl apply -f https://github.com/envoyproxy/gateway/releases/download/v1.0.0/install.yaml
+    - kubectl wait --for=condition=available deployment/envoy-gateway -n envoy-gateway-system --timeout=120s || true
     - kubectl apply -f k8s/01-mysql.yaml
-    # Wait for MySQL to be ready
     - kubectl wait --for=condition=ready pod -l app=mysql -n ${K8S_NAMESPACE} --timeout=120s || true
-    # Deploy Jaeger
     - kubectl apply -f k8s/02-jaeger.yaml
-    # Deploy OpenTelemetry Collector
     - kubectl apply -f k8s/02-1-otel-collector.yaml
-    # Deploy Elasticsearch
     - kubectl apply -f k8s/03-elasticsearch.yaml
-    # Deploy Kibana
     - kubectl apply -f k8s/04-kibana.yaml
-    # Deploy Kafka
     - kubectl apply -f k8s/05-kafka.yaml
-    # Deploy Logstash
     - kubectl apply -f k8s/06-logstash.yaml
-    # Deploy Kong
     - kubectl apply -f k8s/07-kong.yaml
-    # Deploy Keycloak
     - kubectl apply -f k8s/08-keycloak.yaml
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -70,75 +77,92 @@ deploy-infra:
 # Deploy application components
 deploy-apps:
   stage: deploy
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
   tags:
     - minikube
+  variables:
+    KUBECONFIG: /root/.kube/config
   needs:
     - deploy-infra
     - build-images
   before_script:
-    - kubectl config use-context minikube
+    - kubectl version --client
+    - kubectl cluster-info
   script:
     - echo "Deploying applications to Minikube..."
-    # Deploy ConfigMaps
     - kubectl apply -f k8s/09-config.yaml
-    # Deploy application services
     - kubectl apply -f k8s/10-apps.yaml
-    # Deploy gateway
     - kubectl apply -f k8s/11-gateway.yaml
-    # Configure Kong routes
     - kubectl apply -f k8s/12-kong-config.yaml
-    # Wait for deployments to be ready
     - kubectl rollout status deployment -n ${K8S_NAMESPACE} --timeout=300s || true
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_BRANCH == "master"
     - when: manual
 
-# Deploy all at once (alternative single-job approach)
+# Deploy all at once
 deploy-all:
   stage: deploy
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
   tags:
     - minikube
+  variables:
+    KUBECONFIG: /root/.kube/config
   needs:
     - build-images
   before_script:
-    - kubectl config use-context minikube
+    - kubectl version --client
+    - kubectl cluster-info
   script:
     - echo "Deploying all resources to Minikube..."
-    # Apply all k8s manifests in order
     - |
       for manifest in k8s/*.yaml; do
         echo "Applying $manifest..."
         kubectl apply -f "$manifest"
         sleep 2
       done
-    # Show deployment status
     - kubectl get all -n ${K8S_NAMESPACE}
   rules:
     - when: manual
 
-# Cleanup job - removes all resources
+# Cleanup job
 cleanup:
   stage: deploy
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
   tags:
     - minikube
+  variables:
+    KUBECONFIG: /root/.kube/config
   before_script:
-    - kubectl config use-context minikube
+    - kubectl version --client
+    - kubectl cluster-info
   script:
     - echo "Cleaning up resources..."
     - kubectl delete namespace ${K8S_NAMESPACE} --ignore-not-found=true
   rules:
     - when: manual
 
-# Verify deployment status
+# Verify deployment
 verify:
   stage: deploy
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: [""]
   tags:
     - minikube
+  variables:
+    KUBECONFIG: /root/.kube/config
   needs:
     - deploy-apps
   before_script:
-    - kubectl config use-context minikube
+    - kubectl version --client
+    - kubectl cluster-info
   script:
     - echo "Verifying deployment..."
     - kubectl get pods -n ${K8S_NAMESPACE}

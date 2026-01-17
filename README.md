@@ -341,69 +341,125 @@ helm uninstall otel-demo -n otel-demo
 
 ## GitLab CI/CD Deployment
 
-This project includes a `.gitlab-ci.yml` file for automated deployment to a local Minikube cluster.
+This project includes a `.gitlab-ci.yml` file for automated deployment to a local Minikube cluster using a self-hosted GitLab instance.
 
-### Prerequisites
+> **📖 For detailed step-by-step setup instructions, see [SETUP.md](SETUP.md)**
+>
+> The setup guide covers all manual steps including GitLab installation, runner registration, token creation, and Kubernetes secret configuration.
 
-1. **Install GitLab Runner** on your local machine:
-   ```bash
-   # Download and install GitLab Runner
-   # https://docs.gitlab.com/runner/install/
+### Quick Overview
 
-   # Register the runner with shell executor and minikube tag
-   gitlab-runner register --executor shell --tag-list "minikube"
-   ```
-
-2. **Ensure Minikube is running**:
-   ```bash
-   minikube start
-
-   # Optional: Enable registry addon for local image storage
-   minikube addons enable registry
-   ```
-
-3. **Verify kubectl access**:
-   ```bash
-   kubectl config use-context minikube
-   kubectl get nodes
-   ```
+The CI/CD pipeline uses:
+- **Self-hosted GitLab** via Docker Compose (`docker-compose.gitlab.yml`)
+- **GitLab Container Registry** for storing Docker images
+- **GitLab Runner** with Docker executor in host network mode
+- **Minikube** as the target Kubernetes cluster
 
 ### Pipeline Jobs
 
 | Job | Stage | Description |
 |-----|-------|-------------|
-| `build-images` | build | Builds Docker images for gateway, orderservice, and paymentservice using Minikube's Docker daemon |
-| `deploy-infra` | deploy | Deploys infrastructure components (MySQL, Kafka, Jaeger, Elasticsearch, etc.) |
-| `deploy-apps` | deploy | Deploys application services and configurations |
+| `build-images` | build | Builds Docker images and pushes to GitLab Container Registry |
+| `deploy-infra` | deploy | Deploys infrastructure (MySQL, Kafka, Jaeger, Elasticsearch, Gateway API, Envoy Gateway, etc.) |
+| `deploy-apps` | deploy | Deploys application services (gateway, orderservice, paymentservice) |
 | `deploy-all` | deploy | Single job to deploy everything at once (manual trigger) |
 | `cleanup` | deploy | Removes all resources from the namespace |
 | `verify` | deploy | Shows deployment status |
 
-### Running the Pipeline
+### Quick Start
 
-1. **Automatic Trigger**: Push to `main` or `master` branch to trigger the pipeline automatically.
+1. **Start GitLab services**:
+   ```bash
+   docker compose -f docker-compose.gitlab.yml up -d
+   ```
 
-2. **Manual Trigger**: Go to **CI/CD > Pipelines** in GitLab and click **Run pipeline**.
+2. **Follow the setup guide** in [SETUP.md](SETUP.md) to:
+   - Get GitLab initial password
+   - Create and register a GitLab Runner
+   - Create a Deploy Token for the container registry
+   - Create Kubernetes secrets for image pulling
+   - Configure Minikube to access the GitLab registry
 
-3. **Run specific jobs manually**:
-   - `deploy-all`: Deploy everything in one step
-   - `cleanup`: Remove all deployed resources
+3. **Run the pipeline**:
+   - Push to `main`, `master`, or `dev` branch, OR
+   - Manually trigger via GitLab UI: **CI/CD > Pipelines > Run pipeline**
 
-### Customization
+### Key Configuration Files
 
-You can customize the pipeline by modifying the variables in `.gitlab-ci.yml`:
+| File | Description |
+|------|-------------|
+| `.gitlab-ci.yml` | CI/CD pipeline definition |
+| `docker-compose.gitlab.yml` | GitLab and Runner services |
+| `SETUP.md` | Detailed setup instructions |
+| `k8s/10-apps.yaml` | Application deployments with registry config |
 
-```yaml
-variables:
-  K8S_NAMESPACE: otel-demo        # Kubernetes namespace
-  REGISTRY: localhost:5000         # Image registry
+### Understanding GitLab Runner and Kubernetes Image Pull Secrets
+
+When deploying to Kubernetes via GitLab CI/CD, it's important to understand the two separate authentication flows:
+
+#### GitLab Runner (CI/CD Build Stage)
+- The Runner builds Docker images and pushes them to GitLab Container Registry
+- Runner credentials are defined in `.gitlab-ci.yml` as CI/CD variables (`REGISTRY_USER`, `REGISTRY_PASSWORD`)
+- Runner uses these credentials to authenticate **when pushing** images to the registry
+
+#### Kubernetes (Application Runtime)
+- After deployment, Kubernetes needs to pull the container images from GitLab Container Registry to run the pods
+- Kubernetes is a **separate system** that doesn't automatically inherit the Runner's credentials
+- Kubernetes uses the `gitlab-registry` secret (created via `kubectl create secret docker-registry`) to authenticate **when pulling** images
+
+#### Why Both Are Needed
+
 ```
+┌─────────────────────────────────┐
+│  GitLab Runner (CI Job)         │
+│  - Builds images                │
+│  - Uses CI/CD variables         │
+│  - Pushes to registry           │
+└──────────────┬──────────────────┘
+               │
+               ▼
+    ┌─────────────────────────────┐
+    │ GitLab Container Registry   │
+    │ gitlab.example.com:5050     │
+    └──────────────┬──────────────┘
+                   │
+                   ▼ (Later: pod restart,
+                     node failure, etc.)
+    ┌─────────────────────────────┐
+    │ Kubernetes Secret           │
+    │ gitlab-registry             │
+    │ (imagePullSecrets)          │
+    └──────────────┬──────────────┘
+                   │
+                   ▼
+    ┌─────────────────────────────┐
+    │ kubelet                     │
+    │ Pulls image using secret    │
+    │ credentials                 │
+    └─────────────────────────────┘
+```
+
+Kubernetes needs the secret for scenarios like:
+- **Pod restart**: After a crash, Kubernetes auto-restarts the pod and must pull the image again
+- **Node failure**: Pods migrate to another node and need the image
+- **Manual restart**: `kubectl rollout restart deployment` triggers fresh image pulls
+- **Minikube recreation**: All pods need images pulled fresh
+- **Always pull policy**: When `imagePullPolicy: Always` is set
+
+In `k8s/10-apps.yaml`, each deployment references the secret:
+```yaml
+spec:
+  imagePullSecrets:
+  - name: gitlab-registry
+  containers:
+  - image: gitlab.example.com:5050/yusheng/otel-demo/gateway:latest
+```
+
+**Summary**: Runner credentials push images; Kubernetes secrets pull them. Both are essential for the complete CI/CD workflow.
 
 ### Troubleshooting
 
-- **Runner not picking up jobs**: Ensure the runner has the `minikube` tag and is active.
-- **kubectl context issues**: The runner must have access to the Minikube kubeconfig.
-- **Image build failures**: Ensure Minikube's Docker daemon is accessible (`eval $(minikube docker-env)`).
+See the [Troubleshooting section in SETUP.md](SETUP.md#troubleshooting) for common issues and solutions.
 
 ## Kong API Gateway & Keycloak Integration
 
@@ -540,3 +596,114 @@ Data Flow Summary:
 | Kong Manager | http://localhost:8002 | Kong Admin GUI |
 | Keycloak | http://localhost:8080 | Keycloak Admin Console |
 | Keycloak OIDC Config | http://localhost:8080/realms/demo/.well-known/openid-configuration | OIDC Discovery |
+
+### Understanding Keycloak Token Response
+
+When you authenticate with Keycloak using the token endpoint, you receive a JSON response containing several tokens and metadata:
+
+```bash
+# Request a token
+curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+  -d "grant_type=password" \
+  -d "client_id=demo-app" \
+  -d "username=testuser" \
+  -d "password=testpass123" \
+  -d "scope=openid"
+```
+
+**Example Token Response:**
+
+```json
+{
+    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJ0NTVJTmFGdl9oYUFUN29ka3dJUUpLM21NME9qa214Mm8wU0VROGVVcC1jIn0.eyJleHAiOjE3NjkzNjQ5ODAsImlhdCI6MTc2OTM2NDY4MCwianRpIjoib25ydHJvOjFmYjNiNmU2LTU5MWEtZjE4ZS1hYjczLTE3YzRkYTQ3NzgzMSIsImlzcyI6Imh0dHA6Ly9sb2NhbGhvc3Q6ODA4MC9yZWFsbXMvZGVtbyIsInN1YiI6ImJmYzQzMjI3LWNlZDctNDM3NS05Y2Y1LWIxOWI4OTcwMDQ3MyIsInR5cCI6IkJlYXJlciIsImF6cCI6ImRlbW8tYXBwIiwic2lkIjoiODg3ZWNlZDMtYWYxZC02YzU0LWFiZTktNDc3ZDUyMTNkZjNkIiwiYWNyIjoiMSIsImFsbG93ZWQtb3JpZ2lucyI6WyIqIl0sInJlYWxtX2FjY2VzcyI6eyJyb2xlcyI6WyJ1c2VyIl19LCJzY29wZSI6Im9wZW5pZCBwcm9maWxlIGVtYWlsIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsIm5hbWUiOiJUZXN0IFVzZXIiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0dXNlciIsImdpdmVuX25hbWUiOiJUZXN0IiwiZmFtaWx5X25hbWUiOiJVc2VyIiwiZW1haWwiOiJ0ZXN0dXNlckBleGFtcGxlLmNvbSJ9.Fby5w5ODXBxyEQWYvRGVXaCS_wwsT90v8evAbRThINZixLDYghi6TtEN4XqcmrXeWVhdCpzrPZkPgOuSJia2jxoMpJwPemgQdjbsXgr8XBc2I7r98llFk2GpCtfXLXbNA7UCA0Hw7l5_swKCxouGLW7zOngt4rAPCpwSHzDdf2VrUuMUAX0yOvJfo0acivWC0Xf1DpMCdalXF44z3MVpNg15QS7q_MYw_2xqcJY1ky1D8LsJ3gxA-iTiE6hr2t0IY4pPrHnRmtWQkKs82R25LFBQsyX_R2aksm70wOGRE3oFJqlW-LwTUe8r0VzwNCXTPy4JVWJIW-ORuLBfQQuEkA",
+    "expires_in": 300,
+    "refresh_expires_in": 1800,
+    "refresh_token": "eyJhbGciOiJIUzUxMiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICI5ZDM1NWY1NC0zZjJiLTRhY2EtOTc5OS1hYjg1MzMxZGY3MGMifQ.eyJleHAiOjE3NjkzNjY0ODAsImlhdCI6MTc2OTM2NDY4MCwianRpIjoiNWUyMzUxOTEtN2IyNi05NmIwLWQwNzEtZjkyYjQ5MWFkZjJlIiwiaXNzIjoiaHR0cDovL2xvY2FsaG9zdDo4MDgwL3JlYWxtcy9kZW1vIiwiYXVkIjoiaHR0cDovL2xvY2FsaG9zdDo4MDgwL3JlYWxtcy9kZW1vIiwic3ViIjoiYmZjNDMyMjctY2VkNy00Mzc1LTljZjUtYjE5Yjg5NzAwNDczIiwidHlwIjoiUmVmcmVzaCIsImF6cCI6ImRlbW8tYXBwIiwic2lkIjoiODg3ZWNlZDMtYWYxZC02YzU0LWFiZTktNDc3ZDUyMTNkZjNkIiwic2NvcGUiOiJvcGVuaWQgd2ViLW9yaWdpbnMgcHJvZmlsZSBlbWFpbCByb2xlcyBhY3IgYmFzaWMifQ.ceijScNqcuTFQLr3axROB9yAfA8KczwpeZnO_N1lfsCBDklctMOeJrRBI7Vp0P_McIJilkWZRgVN-4sOKJFlgw",
+    "token_type": "Bearer",
+    "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICJ0NTVJTmFGdl9oYUFUN29ka3dJUUpLM21NME9qa214Mm8wU0VROGVVcC1jIn0.eyJleHAiOjE3NjkzNjQ5ODAsImlhdCI6MTc2OTM2NDY4MCwianRpIjoiNTk0ZWViNTEtYzY4OS1mMWJiLWVjMzgtYjRjNThhYTcyZjUyIiwiaXNzIjoiaHR0cDovL2xvY2FsaG9zdDo4MDgwL3JlYWxtcy9kZW1vIiwiYXVkIjoiZGVtby1hcHAiLCJzdWIiOiJiZmM0MzIyNy1jZWQ3LTQzNzUtOWNmNS1iMTliODk3MDA0NzMiLCJ0eXAiOiJJRCIsImF6cCI6ImRlbW8tYXBwIiwic2lkIjoiODg3ZWNlZDMtYWYxZC02YzU0LWFiZTktNDc3ZDUyMTNkZjNkIiwiYXRfaGFzaCI6Ikl0b1I5U1lKUHkyNExpeUQyVUxoZHciLCJhY3IiOiIxIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsIm5hbWUiOiJUZXN0IFVzZXIiLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0dXNlciIsImdpdmVuX25hbWUiOiJUZXN0IiwiZmFtaWx5X25hbWUiOiJVc2VyIiwiZW1haWwiOiJ0ZXN0dXNlckBleGFtcGxlLmNvbSJ9.EXN8DOHDWV7FHf_Qg6J1RlPgQeH7It8Kw7PFtCXxumsBFeDk-5_kps0D_vUilgM3J8VgevCrKWHk8sTceQNNvDGsDiVj_kUHT86_ifeQUHauFg5wwH_mXlp9Z0JVl48ctErTJlU2UNClhu23JD3gchSrsQUihE6CinYnqTzKT2u_-ofuKd49z1WD8hpVIauE72EfxrAPNpb_rdo3JV8vCaPX-Fk47BqPPyNndUuenvqSVMjHrweWAbOPoY7JovbjKSf6TUdCgHR9DZB6stZXGFB9EvL5De0WDpwJZz9QUDTSeTxnoARoBKDTgcuD0rCMT7CDl42BmaQnwQb9js6oMw",
+    "not-before-policy": 0,
+    "session_state": "887eced3-af1d-6c54-abe9-477d5213df3d",
+    "scope": "openid profile email"
+}
+```
+
+**Response Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `access_token` | The JWT bearer token used for API authentication. Include this in the `Authorization: Bearer <token>` header when calling protected APIs via Kong. |
+| `expires_in` | Access token validity in seconds (default: 300 = 5 minutes). After expiration, use the refresh token to get a new access token. |
+| `refresh_token` | Token used to obtain new access tokens without re-authenticating. Longer-lived than the access token. |
+| `refresh_expires_in` | Refresh token validity in seconds (default: 1800 = 30 minutes). |
+| `token_type` | Always `Bearer` - indicates how to use the access token in requests. |
+| `id_token` | OpenID Connect ID token containing user identity claims (name, email, etc.). Used by client applications to identify the user. |
+| `not-before-policy` | Timestamp indicating tokens issued before this time are invalid (used for forced logout scenarios). |
+| `session_state` | Unique session identifier for this authentication session. |
+| `scope` | Granted OAuth scopes (e.g., `openid profile email`). |
+
+**JWT Token Structure (access_token / id_token):**
+
+Each JWT token consists of three Base64-encoded parts separated by dots: `header.payload.signature`
+
+You can decode the payload to see the claims:
+```bash
+# Decode the access token payload (middle part)
+echo "<access_token>" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq .
+```
+
+**Example Decoded Access Token Payload:**
+
+```json
+{
+  "exp": 1769364980,
+  "iat": 1769364680,
+  "jti": "onrtro:1fb3b6e6-591a-f18e-ab73-17c4da477831",
+  "iss": "http://localhost:8080/realms/demo",
+  "sub": "bfc43227-ced7-4375-9cf5-b19b89700473",
+  "typ": "Bearer",
+  "azp": "demo-app",
+  "sid": "887eced3-af1d-6c54-abe9-477d5213df3d",
+  "acr": "1",
+  "allowed-origins": ["*"],
+  "realm_access": {
+    "roles": ["user"]
+  },
+  "scope": "openid profile email",
+  "email_verified": true,
+  "name": "Test User",
+  "preferred_username": "testuser",
+  "given_name": "Test",
+  "family_name": "User",
+  "email": "testuser@example.com"
+}
+```
+
+**Key Claims in Access Token:**
+
+| Claim | Description |
+|-------|-------------|
+| `exp` | Expiration time (Unix timestamp) |
+| `iat` | Issued at time (Unix timestamp) |
+| `iss` | Issuer URL (Keycloak realm URL) |
+| `sub` | Subject - unique user identifier (UUID) |
+| `azp` | Authorized party - the client ID (`demo-app`) |
+| `realm_access.roles` | User's realm-level roles (e.g., `["user"]`) |
+| `scope` | Granted scopes |
+| `name` | User's full name |
+| `preferred_username` | Username |
+| `email` | User's email address |
+
+**Example: Using the Token with Kong:**
+
+```bash
+# Get token and use it
+TOKEN=$(curl -s -X POST "http://localhost:8080/realms/demo/protocol/openid-connect/token" \
+  -d "grant_type=password" \
+  -d "client_id=demo-app" \
+  -d "username=testuser" \
+  -d "password=testpass123" \
+  -d "scope=openid" | jq -r '.access_token')
+
+# Call API through Kong with Bearer token
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/create-order
+```

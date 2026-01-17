@@ -1,10 +1,10 @@
-# Note: You must build these images and make them available to your cluster.
-# Example:
-# docker build -t gateway:latest ./gateway
-# docker build -t orderservice:latest ./orderservice
-# docker build -t paymentservice:latest ./paymentservice
-# If using Minikube: minikube image load gateway:latest ...
-# If using Kind: kind load docker-image gateway:latest ...
+# Note: Images are pulled from GitLab Container Registry
+# Update GITLAB_REGISTRY below to match your GitLab instance
+# Create imagePullSecret: kubectl create secret docker-registry gitlab-registry \
+#   --docker-server=gitlab.example.com:5050 \
+#   --docker-username=<your-username> \
+#   --docker-password=<your-token> \
+#   -n otel-demo
 
 apiVersion: apps/v1
 kind: Deployment
@@ -20,10 +20,12 @@ spec:
       labels:
         app: gateway
     spec:
+      imagePullSecrets:
+      - name: gitlab-registry
       containers:
       - name: gateway
-        image: gateway:latest
-        imagePullPolicy: IfNotPresent
+        image: gitlab.example.com:5050/yusheng/otel-demo/gateway:latest
+        imagePullPolicy: Always
         envFrom:
         - configMapRef:
             name: otel-demo-config
@@ -60,10 +62,12 @@ spec:
       labels:
         app: orderservice
     spec:
+      imagePullSecrets:
+      - name: gitlab-registry
       containers:
       - name: orderservice
-        image: orderservice:latest
-        imagePullPolicy: IfNotPresent
+        image: gitlab.example.com:5050/yusheng/otel-demo/orderservice:latest
+        imagePullPolicy: Always
         envFrom:
         - configMapRef:
             name: otel-demo-config
@@ -100,10 +104,12 @@ spec:
       labels:
         app: paymentservice
     spec:
+      imagePullSecrets:
+      - name: gitlab-registry
       containers:
       - name: paymentservice
-        image: paymentservice:latest
-        imagePullPolicy: IfNotPresent
+        image: gitlab.example.com:5050/yusheng/otel-demo/paymentservice:latest
+        imagePullPolicy: Always
         envFrom:
         - configMapRef:
             name: otel-demo-config
