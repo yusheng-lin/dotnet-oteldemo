@@ -341,69 +341,61 @@ helm uninstall otel-demo -n otel-demo
 
 ## GitLab CI/CD Deployment
 
-This project includes a `.gitlab-ci.yml` file for automated deployment to a local Minikube cluster.
+This project includes a `.gitlab-ci.yml` file for automated deployment to a local Minikube cluster using a self-hosted GitLab instance.
 
-### Prerequisites
+> **📖 For detailed step-by-step setup instructions, see [SETUP.md](SETUP.md)**
+>
+> The setup guide covers all manual steps including GitLab installation, runner registration, token creation, and Kubernetes secret configuration.
 
-1. **Install GitLab Runner** on your local machine:
-   ```bash
-   # Download and install GitLab Runner
-   # https://docs.gitlab.com/runner/install/
+### Quick Overview
 
-   # Register the runner with shell executor and minikube tag
-   gitlab-runner register --executor shell --tag-list "minikube"
-   ```
-
-2. **Ensure Minikube is running**:
-   ```bash
-   minikube start
-
-   # Optional: Enable registry addon for local image storage
-   minikube addons enable registry
-   ```
-
-3. **Verify kubectl access**:
-   ```bash
-   kubectl config use-context minikube
-   kubectl get nodes
-   ```
+The CI/CD pipeline uses:
+- **Self-hosted GitLab** via Docker Compose (`docker-compose.gitlab.yml`)
+- **GitLab Container Registry** for storing Docker images
+- **GitLab Runner** with Docker executor in host network mode
+- **Minikube** as the target Kubernetes cluster
 
 ### Pipeline Jobs
 
 | Job | Stage | Description |
 |-----|-------|-------------|
-| `build-images` | build | Builds Docker images for gateway, orderservice, and paymentservice using Minikube's Docker daemon |
-| `deploy-infra` | deploy | Deploys infrastructure components (MySQL, Kafka, Jaeger, Elasticsearch, etc.) |
-| `deploy-apps` | deploy | Deploys application services and configurations |
+| `build-images` | build | Builds Docker images and pushes to GitLab Container Registry |
+| `deploy-infra` | deploy | Deploys infrastructure (MySQL, Kafka, Jaeger, Elasticsearch, Gateway API, Envoy Gateway, etc.) |
+| `deploy-apps` | deploy | Deploys application services (gateway, orderservice, paymentservice) |
 | `deploy-all` | deploy | Single job to deploy everything at once (manual trigger) |
 | `cleanup` | deploy | Removes all resources from the namespace |
 | `verify` | deploy | Shows deployment status |
 
-### Running the Pipeline
+### Quick Start
 
-1. **Automatic Trigger**: Push to `main` or `master` branch to trigger the pipeline automatically.
+1. **Start GitLab services**:
+   ```bash
+   docker compose -f docker-compose.gitlab.yml up -d
+   ```
 
-2. **Manual Trigger**: Go to **CI/CD > Pipelines** in GitLab and click **Run pipeline**.
+2. **Follow the setup guide** in [SETUP.md](SETUP.md) to:
+   - Get GitLab initial password
+   - Create and register a GitLab Runner
+   - Create a Deploy Token for the container registry
+   - Create Kubernetes secrets for image pulling
+   - Configure Minikube to access the GitLab registry
 
-3. **Run specific jobs manually**:
-   - `deploy-all`: Deploy everything in one step
-   - `cleanup`: Remove all deployed resources
+3. **Run the pipeline**:
+   - Push to `main`, `master`, or `dev` branch, OR
+   - Manually trigger via GitLab UI: **CI/CD > Pipelines > Run pipeline**
 
-### Customization
+### Key Configuration Files
 
-You can customize the pipeline by modifying the variables in `.gitlab-ci.yml`:
-
-```yaml
-variables:
-  K8S_NAMESPACE: otel-demo        # Kubernetes namespace
-  REGISTRY: localhost:5000         # Image registry
-```
+| File | Description |
+|------|-------------|
+| `.gitlab-ci.yml` | CI/CD pipeline definition |
+| `docker-compose.gitlab.yml` | GitLab and Runner services |
+| `SETUP.md` | Detailed setup instructions |
+| `k8s/10-apps.yaml` | Application deployments with registry config |
 
 ### Troubleshooting
 
-- **Runner not picking up jobs**: Ensure the runner has the `minikube` tag and is active.
-- **kubectl context issues**: The runner must have access to the Minikube kubeconfig.
-- **Image build failures**: Ensure Minikube's Docker daemon is accessible (`eval $(minikube docker-env)`).
+See the [Troubleshooting section in SETUP.md](SETUP.md#troubleshooting) for common issues and solutions.
 
 ## Kong API Gateway & Keycloak Integration
 
